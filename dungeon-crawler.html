@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>INVADE THE MOON</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ════════════════════════════════════════
+   Simple black / white UI · Pixelify Sans
+   ════════════════════════════════════════ */
+  * {
+    box-sizing: border-box;
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+  }
+  html, body {
+    margin: 0; padding: 0;
+    background: #000;
+    color: #fff;
+    font-family: 'Pixelify Sans', monospace;
+    overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    height: 100vh;
+  }
+  #wrap {
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+  }
+
+  /* ── HUD (in-game only) ── */
+  #hud {
+    width: 800px;
+    background: #000;
+    border: 2px solid #fff;
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    gap: 16px;
+  }
+  body.in-game #hud { display: flex; }
+  #help { display: none; }
+  body.in-game #help { display: block; }
+  .mission-btn.selected { background: #fff; color: #000; }
+  #roomLabel, #weaponLabel, #rarityLabel { display: none; }
+
+  #hud-left {
+    display: flex; flex-direction: column; gap: 6px; justify-content: center;
+  }
+  .stat-row { display: flex; align-items: center; gap: 4px; min-height: 20px; }
+
+  #ammoVal {
+    font-family: 'Pixelify Sans', monospace;
+    font-size: 16px;
+    color: #fff;
+    min-width: 28px;
+  }
+  #heartsRow {
+    display: flex; align-items: center; gap: 0; flex-wrap: nowrap;
+  }
+  #ammoIcons {
+    display: flex; align-items: center; gap: 0; flex-wrap: nowrap;
+  }
+  #heartsRow img {
+    width: 20px; height: 20px;
+    image-rendering: pixelated;
+    margin: 0 -2px;
+  }
+  #ammoIcons img {
+    width: 16px; height: 16px;
+    image-rendering: pixelated;
+    margin: 0 -1px;
+  }
+  #ammoIcons img.empty {
+    opacity: 0.25;
+    filter: grayscale(1);
+  }
+
+  #keyStatus {
+    display: flex; align-items: center;
+    color: #555;
+    filter: grayscale(1) opacity(0.5);
+    transition: color 0.15s, filter 0.15s;
+  }
+  #keyStatus svg { display: block; }
+  #keyStatus.have {
+    color: #fff;
+    filter: none;
+  }
+
+  #minimap {
+    background: #000;
+    border: 2px solid #fff;
+    image-rendering: pixelated;
+    flex-shrink: 0;
+  }
+  canvas#game {
+    background: #000;
+    border: 2px solid #fff;
+    width: 800px;
+    height: 544px;
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+  }
+
+  #msg {
+    position: absolute; top: 46%; left: 50%; transform: translate(-50%, -50%);
+    font-family: 'Pixelify Sans', monospace;
+    font-size: 24px; text-align: center;
+    display: none; flex-direction: column; gap: 14px; align-items: center;
+    background: #000;
+    padding: 20px 32px;
+    border: 2px solid #fff;
+    letter-spacing: 1px;
+    color: #fff;
+  }
+  #msg button {
+    font-family: 'Pixelify Sans', monospace;
+    font-size: 14px; padding: 10px 22px; cursor: pointer;
+    background: #000; color: #fff;
+    border: 2px solid #fff;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+  #msg button:hover { background: #fff; color: #000; }
+
+  /* ── Overlays (title, pause, briefing) ── */
+  .overlay {
+    position: absolute; inset: 0;
+    display: none; flex-direction: column; gap: 14px;
+    align-items: center; justify-content: center;
+    background: #000;
+    text-align: center;
+    z-index: 5;
+    overflow: hidden;
+    color: #fff;
+  }
+  .overlay.show { display: flex; }
+  .overlay > * { position: relative; z-index: 2; }
+
+  .overlay h1 {
+    font-family: 'Pixelify Sans', monospace;
+    font-size: 36px; margin: 0; letter-spacing: 4px;
+    color: #fff; font-weight: 700;
+  }
+  .overlay h2 {
+    font-family: 'Pixelify Sans', monospace;
+    font-size: 22px; margin: 0; letter-spacing: 3px;
+    color: #fff; font-weight: 600;
+  }
+  .overlay .sub {
+    font-size: 13px; color: #aaa; letter-spacing: 1px;
+    max-width: 520px; line-height: 1.6;
+  }
+  .overlay .marquee {
+    font-size: 11px; letter-spacing: 4px; color: #888;
+  }
+  .overlay .press-start {
+    font-size: 13px; letter-spacing: 2px; color: #fff;
+    animation: blink 1.1s steps(1) infinite;
+  }
+  .overlay .hiscore {
+    font-size: 11px; letter-spacing: 2px; color: #666;
+  }
+
+  .menu-btns { display: flex; flex-direction: column; gap: 10px; align-items: center; }
+  .overlay button {
+    font-family: 'Pixelify Sans', monospace;
+    font-size: 14px; padding: 10px 28px; cursor: pointer;
+    background: #000; color: #fff;
+    border: 2px solid #fff;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    min-width: 200px;
+  }
+  .overlay button:hover { background: #fff; color: #000; }
+  .overlay button:active { background: #ccc; color: #000; }
+  .overlay button.secondary {
+    border-color: #666; color: #ccc;
+  }
+  .overlay button.secondary:hover { background: #fff; color: #000; border-color: #fff; }
+
+  @keyframes blink {
+    0%, 49% { opacity: 1; }
+    50%, 100% { opacity: 0; }
+  }
+
+  #toast {
+    position: absolute; top: 10%; left: 50%; transform: translate(-50%, -50%);
+    background: #000;
+    border: 2px solid #fff;
+    padding: 8px 18px;
+    font-family: 'Pixelify Sans', monospace;
+    font-size: 13px; letter-spacing: 2px; color: #fff;
+    opacity: 0; transition: opacity 0.2s; pointer-events: none; white-space: nowrap;
+  }
+  #toast.show { opacity: 1; }
+
+  #help {
+    font-family: 'Pixelify Sans', monospace;
+    font-size: 12px; color: #666; width: 800px; text-align: center;
+    letter-spacing: 1px;
+  }
+
+  /* ── Briefing panel (controls + what to do) ── */
+  .panel-scroll {
+    max-height: 400px; overflow-y: auto; overflow-x: hidden;
+    width: min(720px, 92vw);
+    text-align: left;
+    padding: 4px 8px 8px;
+    scrollbar-width: thin;
+    scrollbar-color: #fff #222;
+  }
+  .panel-scroll::-webkit-scrollbar { width: 8px; }
+  .panel-scroll::-webkit-scrollbar-track { background: #111; }
+  .panel-scroll::-webkit-scrollbar-thumb { background: #fff; }
+
+  .section-label {
+    font-size: 14px; letter-spacing: 3px; color: #fff;
+    border-bottom: 2px solid #fff; padding-bottom: 4px; margin: 16px 0 10px;
+    font-weight: 600;
+  }
+  .section-label:first-child { margin-top: 0; }
+
+  .controls-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 8px;
+  }
+  .ctrl-card {
+    background: #000;
+    border: 2px solid #444;
+    padding: 8px 10px;
+  }
+  .ctrl-card .keys {
+    font-size: 13px; color: #fff; letter-spacing: 1px; margin-bottom: 3px;
+  }
+  .ctrl-card .desc { font-size: 12px; color: #aaa; line-height: 1.35; }
+
+  .action-block {
+    margin-bottom: 14px;
+  }
+  .action-block .action-title {
+    font-size: 13px; letter-spacing: 2px; color: #fff;
+    margin-bottom: 8px; font-weight: 600;
+  }
+  .action-row {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch;
+  }
+  .sprite-chip {
+    display: flex; gap: 8px; align-items: center;
+    background: #000; border: 2px solid #444;
+    padding: 6px 10px; min-width: 140px;
+  }
+  .sprite-chip .thumb {
+    width: 32px; height: 32px; flex-shrink: 0;
+    background: #111; border: 1px solid #333;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .sprite-chip .thumb img {
+    max-width: 28px; max-height: 28px;
+    image-rendering: pixelated;
+  }
+  .sprite-chip .info { text-align: left; }
+  .sprite-chip .info .name {
+    font-size: 12px; color: #fff; letter-spacing: 0.5px;
+  }
+  .sprite-chip .info .hint {
+    font-size: 11px; color: #888;
+  }
+
+  /* Options form */
+  .opt-list {
+    width: min(360px, 90vw);
+    display: flex; flex-direction: column; gap: 14px;
+    text-align: left;
+  }
+  .opt-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px;
+  }
+  .opt-row label {
+    font-size: 13px; letter-spacing: 1px; color: #fff;
+    min-width: 90px;
+  }
+  .opt-row .opt-val {
+    font-size: 12px; color: #aaa; min-width: 36px; text-align: right;
+  }
+  .opt-row input[type="range"] {
+    flex: 1;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 6px;
+    background: #333;
+    border: 1px solid #fff;
+    outline: none;
+    cursor: pointer;
+  }
+  .opt-row input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px; height: 14px;
+    background: #fff;
+    border: 2px solid #000;
+    cursor: pointer;
+  }
+  .opt-row input[type="range"]::-moz-range-thumb {
+    width: 14px; height: 14px;
+    background: #fff;
+    border: 2px solid #000;
+    cursor: pointer;
+  }
+  .opt-row input[type="range"]:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+  .opt-toggle {
+    font-family: 'Pixelify Sans', monospace;
+    font-size: 13px; padding: 6px 14px; cursor: pointer;
+    background: #000; color: #fff;
+    border: 2px solid #fff;
+    letter-spacing: 1px;
+    min-width: 64px;
+  }
+  .opt-toggle:hover { background: #fff; color: #000; }
+  .opt-toggle.off {
+    border-color: #555; color: #888;
+  }
+  .opt-toggle.off:hover { background: #fff; color: #000; border-color: #fff; }
+  .skill-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; border: 2px solid #333; padding: 8px 10px;
+  }
+  .skill-name { font-size: 13px; letter-spacing: 1px; color: #fff; }
+  .skill-desc { font-size: 11px; color: #888; }
+  .opt-divider {
+    border: none; border-top: 1px solid #333; margin: 4px 0;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="hud">
+    <div id="hud-left">
+      <div class="stat-row" id="heartsRow"></div>
+      <div class="stat-row">
+        <span id="ammoVal">18</span>
+        <div id="ammoIcons"></div>
+      </div>
+      <div class="stat-row" id="keyStatus">
+        <svg viewBox="0 0 16 16" width="20" height="20" shape-rendering="crispEdges">
+          <rect x="2" y="6" width="6" height="6" fill="currentColor"/>
+          <rect x="4" y="8" width="2" height="2" fill="#000"/>
+          <rect x="7" y="8" width="7" height="2" fill="currentColor"/>
+          <rect x="11" y="10" width="2" height="3" fill="currentColor"/>
+          <rect x="13" y="10" width="2" height="2" fill="currentColor"/>
+        </svg>
+      </div>
+    </div>
+    <canvas id="minimap" width="110" height="110"></canvas>
+  </div>
+  <div id="roomLabel"></div>
+  <div id="weaponLabel"></div>
+  <div id="rarityLabel"></div>
+  <div style="position:relative;">
+    <canvas id="game" width="800" height="544"></canvas>
+    <div id="msg"></div>
+    <div id="toast"></div>
+
+    <!-- TITLE -->
+    <div id="titleScreen" class="overlay show">
+      <div class="marquee">Space Studios</div>
+      <h1>INVADE THE MOON</h1>
+      <div class="menu-btns">
+        <button id="btnStart">Start</button>
+        <button id="btnSkills" class="secondary">Skills</button>
+        <button id="btnOptions" class="secondary">Options</button>
+      </div>
+    </div>
+
+    <!-- SKILL TREE -->
+    <div id="skillScreen" class="overlay">
+      <h2>SKILL TREE</h2>
+      <div class="sub" id="skillPoints">0 POINTS</div>
+      <div class="opt-list" id="skillList" style="max-height:320px;overflow-y:auto;"></div>
+      <div class="sub" style="margin-top:8px;">Earn points by clearing missions.</div>
+      <div class="menu-btns" style="margin-top:14px;">
+        <button id="btnSkillsBack" class="secondary">Back</button>
+      </div>
+    </div>
+
+    <!-- MISSIONS / SKILLS / CONTROLS hub -->
+    <div id="levelScreen" class="overlay">
+      <h2 id="hubTitle">MISSIONS</h2>
+      <div class="menu-btns" style="flex-direction:row;gap:8px;margin-bottom:12px;">
+        <button type="button" id="tabMissions" class="mission-btn selected" style="min-width:100px;padding:8px 12px;">Missions</button>
+        <button type="button" id="tabSkills" class="mission-btn secondary" style="min-width:100px;padding:8px 12px;">Skills</button>
+        <button type="button" id="tabControls" class="mission-btn secondary" style="min-width:100px;padding:8px 12px;">Controls</button>
+      </div>
+
+      <!-- Missions panel -->
+      <div id="panelMissions">
+        <div class="menu-btns" style="gap:10px;">
+          <button type="button" id="btnMission1" class="mission-btn selected" style="min-width:300px;text-align:left;padding:12px 16px;">
+            1 — FLIGHT TO THE MOON<br>
+            <span style="font-size:11px;color:#888;">Fly to the moon · dodge · shoot</span>
+          </button>
+          <button type="button" id="btnMission2" class="mission-btn secondary" style="min-width:300px;text-align:left;padding:12px 16px;">
+            2 — SURFACE BASE ASSAULT<br>
+            <span style="font-size:11px;color:#888;">Landing pad → housing → complex gate</span>
+          </button>
+          <button type="button" id="btnMission3" class="mission-btn secondary" style="min-width:300px;text-align:left;padding:12px 16px;">
+            3 — LUNAR COMPLEX<br>
+            <span style="font-size:11px;color:#888;">Dungeon · key · boss</span>
+          </button>
+        </div>
+        <div class="sub" id="missionHint" style="margin-top:8px;">WASD move · Click / Space fire · Esc pause</div>
+        <div class="menu-btns" style="margin-top:16px;flex-direction:row;gap:12px;">
+          <button id="btnMissionStart">Start</button>
+          <button id="btnLevelBack" class="secondary">Back</button>
+        </div>
+      </div>
+
+      <!-- Skills panel (embedded) -->
+      <div id="panelSkills" style="display:none;">
+        <div class="sub" id="skillPointsHub">0 POINTS</div>
+        <div class="opt-list" id="skillListHub" style="max-height:280px;overflow-y:auto;"></div>
+        <div class="sub" style="margin-top:8px;">Earn points by clearing missions.</div>
+        <div class="menu-btns" style="margin-top:14px;">
+          <button id="btnSkillsHubBack" class="secondary">Back</button>
+        </div>
+      </div>
+
+      <!-- Controls panel -->
+      <div id="panelControls" style="display:none;">
+        <div class="sub" style="line-height:1.9;max-width:360px;text-align:left;">
+          <div><b>WASD</b> — Move</div>
+          <div><b>Mouse</b> — Aim</div>
+          <div><b>Click / Space</b> — Fire</div>
+          <div><b>Scroll / 1-9</b> — Switch gun</div>
+          <div><b>Esc</b> — Pause</div>
+          <div style="margin-top:10px;color:#888;">Destroy base props (ships, drills, trucks, life support) — they take multiple hits then explode.</div>
+        </div>
+        <div class="menu-btns" style="margin-top:16px;">
+          <button id="btnControlsBack" class="secondary">Back</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- CONTROLS (still available from pause) -->
+    <div id="briefingScreen" class="overlay">
+      <h2>CONTROLS</h2>
+      <div class="sub" style="line-height:1.8;max-width:360px;">
+        <div><b>WASD</b> — Move</div>
+        <div><b>Mouse</b> — Aim</div>
+        <div><b>Click / Space</b> — Fire</div>
+        <div><b>Scroll</b> — Switch gun</div>
+        <div><b>Esc</b> — Pause</div>
+      </div>
+      <div class="menu-btns">
+        <button id="btnBriefingGo">OK</button>
+        <button id="btnBriefingBack" class="secondary">Back</button>
+      </div>
+    </div>
+
+    <!-- PAUSE -->
+    <div id="pauseScreen" class="overlay">
+      <h2>PAUSED</h2>
+      <div class="menu-btns">
+        <button id="btnResume">Resume</button>
+        <button id="btnPauseBriefing" class="secondary">Controls &amp; Guide</button>
+        <button id="btnPauseOptions" class="secondary">Options</button>
+        <button id="btnRestart" class="secondary">Restart</button>
+        <button id="btnMainMenu" class="secondary">Main Menu</button>
+      </div>
+    </div>
+
+    <!-- OPTIONS -->
+    <div id="optionsScreen" class="overlay">
+      <h2>OPTIONS</h2>
+      <div class="opt-list">
+        <div class="opt-row">
+          <label>SFX</label>
+          <button type="button" class="opt-toggle" id="btnToggleSfx">ON</button>
+        </div>
+        <div class="opt-row">
+          <label>SFX VOL</label>
+          <input type="range" id="sfxVolSlider" min="0" max="100" value="70" />
+          <span class="opt-val" id="sfxVolLabel">70%</span>
+        </div>
+        <hr class="opt-divider" />
+        <div class="opt-row">
+          <label>MUSIC</label>
+          <button type="button" class="opt-toggle" id="btnToggleMusic">ON</button>
+        </div>
+        <div class="opt-row">
+          <label>MUSIC VOL</label>
+          <input type="range" id="musicVolSlider" min="0" max="100" value="50" />
+          <span class="opt-val" id="musicVolLabel">50%</span>
+        </div>
+        <div class="sub" style="margin:0; max-width:none;"></div>
+        <hr class="opt-divider" />
+        <div class="opt-row">
+          <label>PARTICLES</label>
+          <button type="button" class="opt-toggle" id="btnToggleParticles">ON</button>
+        </div>
+        <div class="opt-row">
+          <label>MINIMAP</label>
+          <button type="button" class="opt-toggle" id="btnToggleMinimap">ON</button>
+        </div>
+        <div class="opt-row">
+          <label>SHOW FPS</label>
+          <button type="button" class="opt-toggle" id="btnToggleFps">OFF</button>
+        </div>
+        <div class="opt-row">
+          <label>DISPLAY</label>
+          <button type="button" class="opt-toggle" id="btnFullscreen" style="min-width:110px;">FULLSCREEN</button>
+        </div>
+      </div>
+      <div class="menu-btns" style="margin-top:16px;">
+        <button id="btnOptionsBack" class="secondary">Back</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  (function () {
+    var origGetContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (type, opts) {
+      var ctx = origGetContext.call(this, type, opts);
+      if (ctx && type === '2d') {
+        ctx.imageSmoothingEnabled = false;
+        ctx.webkitImageSmoothingEnabled = false;
+        ctx.mozImageSmoothingEnabled = false;
+        ctx.msImageSmoothingEnabled = false;
+        ctx.oImageSmoothingEnabled = false;
+      }
+      return ctx;
+    };
+  })();
+</script>
+<script src="config.js"></script>
+<script src="assets.js"></script>
+<script src="game-skills.js"></script>
+<script src="game-invaders.js"></script>
+<script src="game-openfield.js"></script>
+<script src="game.js"></script>
+<script>
+  // ════════════════════════════════════════
+  // Menu flow: Title → Briefing → Play
+  // Options (SFX / Music later)
+  // ════════════════════════════════════════
+  (function () {
+    const title = document.getElementById('titleScreen');
+    const levels = document.getElementById('levelScreen');
+    const briefing = document.getElementById('briefingScreen');
+    const pause = document.getElementById('pauseScreen');
+    const options = document.getElementById('optionsScreen');
+    const skills = document.getElementById('skillScreen');
+
+    let returnTo = 'title';
+    let selectedMission = 1;
+
+    function setInGame(on) { document.body.classList.toggle('in-game', !!on); }
+    setInGame(false);
+
+    function hideAll() {
+      [title, levels, briefing, pause, options, skills].forEach(el => el && el.classList.remove('show'));
+    }
+    function show(el) {
+      hideAll();
+      if (el) el.classList.add('show');
+      if (el === title || el === levels || el === briefing || el === options || el === skills) setInGame(false);
+      if (el === pause) setInGame(true);
+    }
+    function goBack() {
+      if (returnTo === 'pause') { show(pause); setInGame(true); }
+      else if (returnTo === 'levels') show(levels);
+      else if (returnTo === 'briefing') show(briefing);
+      else show(title);
+    }
+
+    function selectMission(id) {
+      selectedMission = id;
+      if (typeof currentMission !== 'undefined') currentMission = id;
+      [1, 2, 3].forEach(n => {
+        const b = document.getElementById('btnMission' + n);
+        if (!b) return;
+        const on = n === id;
+        b.classList.toggle('selected', on);
+        b.classList.toggle('secondary', !on);
+      });
+    }
+
+    function showHubTab(tab) {
+      const pM = document.getElementById('panelMissions');
+      const pS = document.getElementById('panelSkills');
+      const pC = document.getElementById('panelControls');
+      const tM = document.getElementById('tabMissions');
+      const tS = document.getElementById('tabSkills');
+      const tC = document.getElementById('tabControls');
+      const titleEl = document.getElementById('hubTitle');
+      if (!pM) return;
+      pM.style.display = tab === 'missions' ? '' : 'none';
+      pS.style.display = tab === 'skills' ? '' : 'none';
+      pC.style.display = tab === 'controls' ? '' : 'none';
+      if (tM) { tM.classList.toggle('selected', tab === 'missions'); tM.classList.toggle('secondary', tab !== 'missions'); }
+      if (tS) { tS.classList.toggle('selected', tab === 'skills'); tS.classList.toggle('secondary', tab !== 'skills'); }
+      if (tC) { tC.classList.toggle('selected', tab === 'controls'); tC.classList.toggle('secondary', tab !== 'controls'); }
+      if (titleEl) {
+        titleEl.textContent = tab === 'skills' ? 'SKILLS' : (tab === 'controls' ? 'CONTROLS' : 'MISSIONS');
+      }
+      if (tab === 'skills' && typeof renderSkillTreeUI === 'function') {
+        const list = document.getElementById('skillListHub');
+        const pts = document.getElementById('skillPointsHub');
+        const oldList = document.getElementById('skillList');
+        const oldPts = document.getElementById('skillPoints');
+        if (list && oldList) {
+          renderSkillTreeUI();
+          list.innerHTML = oldList.innerHTML;
+          if (pts && oldPts) pts.textContent = oldPts.textContent;
+          function rebind() {
+            list.querySelectorAll('[data-skill]').forEach(btn => {
+              btn.addEventListener('click', () => {
+                if (typeof buySkill === 'function' && buySkill(btn.getAttribute('data-skill'))) {
+                  renderSkillTreeUI();
+                  list.innerHTML = oldList.innerHTML;
+                  if (pts && oldPts) pts.textContent = oldPts.textContent;
+                  rebind();
+                }
+              });
+            });
+          }
+          rebind();
+        }
+      }
+    }
+
+    const btnStart = document.getElementById('btnStart');
+    const startClone = btnStart.cloneNode(true);
+    btnStart.parentNode.replaceChild(startClone, btnStart);
+    startClone.addEventListener('click', () => {
+      returnTo = 'title';
+      if (typeof playMusic === 'function') playMusic('title');
+      selectMission(typeof currentMission !== 'undefined' ? currentMission : 1);
+      showHubTab('missions');
+      show(levels);
+    });
+
+    document.getElementById('btnMission1').addEventListener('click', () => selectMission(1));
+    document.getElementById('btnMission2').addEventListener('click', () => selectMission(2));
+    document.getElementById('btnMission3').addEventListener('click', () => selectMission(3));
+    document.getElementById('btnLevelBack').addEventListener('click', () => show(title));
+    document.getElementById('btnMissionStart').addEventListener('click', () => {
+      if (typeof currentMission !== 'undefined') currentMission = selectedMission;
+      if (typeof startMission === 'function') startMission();
+      else if (typeof started !== 'undefined') started = true;
+      hideAll();
+      setInGame(true);
+    });
+
+    // Hub tabs: Missions / Skills / Controls
+    const tabMissionsEl = document.getElementById('tabMissions');
+    const tabSkillsEl = document.getElementById('tabSkills');
+    const tabControlsEl = document.getElementById('tabControls');
+    if (tabMissionsEl) tabMissionsEl.addEventListener('click', () => showHubTab('missions'));
+    if (tabSkillsEl) tabSkillsEl.addEventListener('click', () => showHubTab('skills'));
+    if (tabControlsEl) tabControlsEl.addEventListener('click', () => showHubTab('controls'));
+    const btnSkillsHubBack = document.getElementById('btnSkillsHubBack');
+    if (btnSkillsHubBack) btnSkillsHubBack.addEventListener('click', () => show(title));
+    const btnControlsBack = document.getElementById('btnControlsBack');
+    if (btnControlsBack) btnControlsBack.addEventListener('click', () => show(title));
+
+    document.getElementById('btnBriefingGo').addEventListener('click', () => {
+      if (returnTo === 'pause') { show(pause); setInGame(true); }
+      else show(levels);
+    });
+    document.getElementById('btnBriefingBack').addEventListener('click', () => {
+      if (returnTo === 'pause') { show(pause); setInGame(true); }
+      else show(levels);
+    });
+
+    const pauseBrief = document.getElementById('btnPauseBriefing');
+    if (pauseBrief) {
+      pauseBrief.addEventListener('click', () => {
+        returnTo = 'pause';
+        show(briefing);
+      });
+    }
+
+    document.getElementById('btnSkills').addEventListener('click', () => {
+      returnTo = 'title';
+      selectMission(typeof currentMission !== 'undefined' ? currentMission : 1);
+      showHubTab('skills');
+      show(levels);
+    });
+    document.getElementById('btnSkillsBack').addEventListener('click', () => show(title));
+
+    // Options
+    function setToggleBtn(id, on) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.textContent = on ? 'ON' : 'OFF';
+      el.classList.toggle('off', !on);
+    }
+    function refreshOptionsUI() {
+      setToggleBtn('btnToggleSfx', typeof sfxEnabled === 'undefined' || sfxEnabled);
+      setToggleBtn('btnToggleMusic', typeof musicEnabled === 'undefined' || musicEnabled);
+      setToggleBtn('btnToggleParticles', typeof particlesEnabled === 'undefined' || particlesEnabled);
+      setToggleBtn('btnToggleMinimap', typeof minimapEnabled === 'undefined' || minimapEnabled);
+      setToggleBtn('btnToggleFps', typeof showFps !== 'undefined' && showFps);
+
+      const sfxSl = document.getElementById('sfxVolSlider');
+      const musSl = document.getElementById('musicVolSlider');
+      const sfxLab = document.getElementById('sfxVolLabel');
+      const musLab = document.getElementById('musicVolLabel');
+      const sfxV = typeof sfxVolume !== 'undefined' ? sfxVolume : 0.7;
+      const musV = typeof musicVolume !== 'undefined' ? musicVolume : 0.5;
+      if (sfxSl) {
+        sfxSl.value = Math.round(sfxV * 100);
+        sfxSl.disabled = typeof sfxEnabled !== 'undefined' && !sfxEnabled;
+      }
+      if (musSl) {
+        musSl.value = Math.round(musV * 100);
+        musSl.disabled = typeof musicEnabled !== 'undefined' && !musicEnabled;
+      }
+      if (sfxLab) sfxLab.textContent = Math.round(sfxV * 100) + '%';
+      if (musLab) musLab.textContent = Math.round(musV * 100) + '%';
+    }
+
+    function openOptions(from) {
+      returnTo = from;
+      refreshOptionsUI();
+      show(options);
+    }
+
+    document.getElementById('btnOptions').addEventListener('click', () => openOptions('title'));
+    document.getElementById('btnPauseOptions').addEventListener('click', () => openOptions('pause'));
+    document.getElementById('btnOptionsBack').addEventListener('click', goBack);
+
+    document.getElementById('btnToggleSfx').addEventListener('click', () => {
+      if (typeof setSfxEnabled === 'function') setSfxEnabled(!sfxEnabled);
+      refreshOptionsUI();
+    });
+    document.getElementById('btnToggleMusic').addEventListener('click', () => {
+      if (typeof setMusicEnabled === 'function') setMusicEnabled(!musicEnabled);
+      refreshOptionsUI();
+    });
+    document.getElementById('btnToggleParticles').addEventListener('click', () => {
+      if (typeof setParticlesEnabled === 'function') setParticlesEnabled(!particlesEnabled);
+      refreshOptionsUI();
+    });
+    document.getElementById('btnToggleMinimap').addEventListener('click', () => {
+      if (typeof setMinimapEnabled === 'function') setMinimapEnabled(!minimapEnabled);
+      refreshOptionsUI();
+    });
+    document.getElementById('btnToggleFps').addEventListener('click', () => {
+      if (typeof setShowFps === 'function') setShowFps(!showFps);
+      refreshOptionsUI();
+    });
+    document.getElementById('btnFullscreen').addEventListener('click', () => {
+      if (typeof toggleFullscreen === 'function') toggleFullscreen();
+    });
+
+    document.getElementById('sfxVolSlider').addEventListener('input', (e) => {
+      const v = Number(e.target.value) / 100;
+      if (typeof setSfxVolume === 'function') setSfxVolume(v);
+      document.getElementById('sfxVolLabel').textContent = e.target.value + '%';
+    });
+    document.getElementById('musicVolSlider').addEventListener('input', (e) => {
+      const v = Number(e.target.value) / 100;
+      if (typeof setMusicVolume === 'function') setMusicVolume(v);
+      document.getElementById('musicVolLabel').textContent = e.target.value + '%';
+    });
+
+    // Preview SFX when releasing the volume slider
+    document.getElementById('sfxVolSlider').addEventListener('change', () => {
+      if (typeof playSfx === 'function') playSfx('pickup');
+    });
+
+    refreshOptionsUI();
+  })();
+</script>
+</body>
+</html>
