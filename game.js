@@ -2,11 +2,15 @@
 // STATE
 // ════════════════════════════════════════
 const rooms = {};
-let startKey, bossKey, curKey;
+let startKey, bossKey, curKey, exitHubKey = null;
 const player = {
   x: 400, y: 272, r: 14, speed: 4.8,
   hp: 6, maxHp: 6, invuln: 0, shootCooldown: 0,
-  dx: 0, dy: -1, hasBossKey: false, ammo: STARTING_AMMO,
+  dx: 0, dy: -1, hasBossKey: false,
+  ammo: 200,
+  maxAmmo: 9999,
+  mag: 12,
+  reloadTimer: 0,
   hazardCD: 0
 };
 let unlockedWeapons = new Set(['pistol']);
@@ -18,78 +22,507 @@ let explosions = [];
 let meleeSwing = null;
 let pickups = [];
 let gameOver = false;
+let bossDefeatedThisDepth = false; // boss dead → exit hub unlocked
+let runTimerStart = 0;
+let runTimerAccum = 0;
+let runTimerRunning = false;
+
 let gunFrame = 0, gunAnimTimer = 0;
 let started = false;
 let paused = false;
-let gameMode = 'dungeon';
+let exitConfirmPending = null; // { action, label, detail }
+let exitZoneCooldown = 0;
 const _roomCache = { key: null, canvas: null };
 function invalidateRoomCache() { _roomCache.key = null; }
 
-function startMission() {
+/** Depths with special choice exit hubs. */
+const CHOICE_EXIT_DEPTHS = [5, 10, 15];
+/** Last normal depth; continue can open secret depth 16. */
+const FINAL_NORMAL_DEPTH = 15;
+const SECRET_DEPTH = 16;
+
+function startMission(opts) {
+  opts = opts || {};
   gameOver = false; paused = false; started = true;
-  const m = (typeof MISSIONS !== 'undefined' && MISSIONS[currentMission]) ? MISSIONS[currentMission] : { mode: 'dungeon' };
-  gameMode = m.mode || 'dungeon';
+  bossDefeatedThisDepth = false;
+  exitConfirmPending = null;
+  exitZoneCooldown = 0;
+  if (typeof skipDialogue === 'function') skipDialogue();
   const el = document.getElementById('msg');
   if (el) { el.style.display = 'none'; el.innerHTML = ''; }
-  if (typeof applySkillsToPlayer === 'function') applySkillsToPlayer();
+
+  if (typeof loadMeta === 'function') loadMeta();
+
+  const gunId = opts.gunId || (typeof runBag !== 'undefined' && runBag.loadoutGun) || 'pistol';
+  const relicId = opts.relicId != null ? opts.relicId
+    : (typeof runBag !== 'undefined' ? runBag.loadoutRelic : null);
+  const startDepth = opts.depth != null ? opts.depth : 1;
+
+  // Fresh run unless continuing deeper mid-run
+  if (!opts.continueRun) {
+    if (typeof beginRun === 'function') beginRun(gunId, relicId, startDepth);
+  }
+
+  if (typeof applyRelicsToPlayer === 'function') applyRelicsToPlayer();
   else { player.maxHp = 6; player.speed = 4.8; }
   player.hp = player.maxHp;
-  player.ammo = (typeof skillStartAmmo === 'function') ? skillStartAmmo() : STARTING_AMMO;
+  player.reloadTimer = 0;
   player.hasBossKey = false; player.invuln = 0;
-  unlockedWeapons = new Set(['pistol']); weaponIndex = 0;
+
+  // Only loadout gun + finds this run (not full profile)
+  unlockedWeapons = new Set(['pistol']);
+  if (gunId) unlockedWeapons.add(gunId);
+  if (typeof runBag !== 'undefined' && runBag.foundWeapons) {
+    runBag.foundWeapons.forEach(id => unlockedWeapons.add(id));
+  }
+  weaponIndex = 0;
+  const prefer = gunId || 'pistol';
+  const wi = ARSENAL.findIndex(w => w.id === prefer);
+  if (wi >= 0 && unlockedWeapons.has(prefer)) weaponIndex = wi;
+
   playerProjectiles.length = 0; enemyProjectiles.length = 0;
   particles.length = 0; explosions.length = 0;
-  const miniEl = document.getElementById('minimap');
-  if (gameMode === 'invaders') {
-    if (typeof initInvaders === 'function') initInvaders();
-    if (miniEl) miniEl.style.visibility = 'hidden';
-  } else if (gameMode === 'openfield') {
-    if (typeof initOpenField === 'function') initOpenField();
-    if (miniEl) miniEl.style.visibility = 'hidden';
-  } else {
-    for (const k of Object.keys(rooms)) delete rooms[k];
-    generateDungeon();
-    invalidateRoomCache();
-    updateRoomLabel();
-    if (typeof setMinimapEnabled === 'function') setMinimapEnabled(minimapEnabled);
+  for (const k of Object.keys(rooms)) delete rooms[k];
+  generateDungeon();
+  invalidateRoomCache();
+  updateRoomLabel();
+  player.ammo = 200;
+  try {
+    setWeapon(weaponIndex, { quiet: true, force: true });
+  } catch (e) {
+    console.warn('startMission: setWeapon failed', e);
   }
-  // music: boss track only when boss mission fight starts; otherwise game theme
+  giveDeployAmmo();
+  if ((player.mag | 0) <= 0) {
+    let size = 12;
+    try {
+      const w = currentWeapon();
+      size = (typeof effectiveMagSize === 'function') ? effectiveMagSize(w) : 12;
+    } catch (e) {}
+    player.mag = (size | 0) > 0 ? (size | 0) : 12;
+  }
+  if (!((player.ammo | 0) > 0)) player.ammo = 200;
+  if (typeof setMinimapEnabled === 'function') setMinimapEnabled(minimapEnabled);
   if (typeof playMusic === 'function') playMusic('game');
+  if (typeof depthLabel === 'function') flashToast(depthLabel());
+  runTimerStart = performance.now();
+  runTimerAccum = 0;
+  runTimerRunning = true;
+  // Opening story beat (once per browser session unless you clear storiesPlayed)
+  if (typeof playStory === 'function') {
+    setTimeout(() => playStory('mission_start'), 400);
+  }
+}
+
+function continueMissionDeeper() {
+  if (typeof continueDeeper === 'function') continueDeeper();
+  gameOver = false; paused = false; started = true;
+  bossDefeatedThisDepth = false;
+  exitConfirmPending = null;
+  exitZoneCooldown = 0;
+  const el = document.getElementById('msg');
+  if (el) { el.style.display = 'none'; el.innerHTML = ''; }
+  if (typeof applyRelicsToPlayer === 'function') applyRelicsToPlayer();
+  player.hp = Math.min(player.maxHp, Math.max(player.hp, Math.ceil(player.maxHp * 0.5)));
+  player.ammo = Math.max(player.ammo | 0, 80);
+  player.hasBossKey = false; player.invuln = 30;
+  playerProjectiles.length = 0; enemyProjectiles.length = 0;
+  particles.length = 0; explosions.length = 0;
+  for (const k of Object.keys(rooms)) delete rooms[k];
+  generateDungeon();
+  invalidateRoomCache();
+  updateRoomLabel();
+  setWeapon(weaponIndex, { quiet: true, force: true });
+  if (player.mag <= 0) fillMagFromReserve(currentWeapon());
+  if (typeof playMusic === 'function') playMusic('game');
+  if (typeof depthLabel === 'function') flashToast('CONTINUING · ' + depthLabel());
+  if (!runTimerRunning) {
+    runTimerStart = performance.now();
+    runTimerRunning = true;
+  }
+}
+
+function extractAndEndRun() {
+  const summary = (typeof formatRunRewardsSummary === 'function') ? formatRunRewardsSummary() : { guns: [], relics: [], depth: 1 };
+  if (typeof extractRunToProfile === 'function') extractRunToProfile();
+  if (typeof resetRunBag === 'function') resetRunBag();
+  gameOver = true;
+  started = false;
+  const gunLine = summary.guns.length ? summary.guns.join(', ') : '—';
+  const relicLine = summary.relics.length ? summary.relics.join(', ') : '—';
+  const el = document.getElementById('msg');
+  el.style.display = 'flex';
+  el.innerHTML =
+    '<div style="text-align:center;max-width:420px">' +
+    '<div style="font-size:22px;letter-spacing:2px;color:#8fe0c9">EXTRACTION SUCCESS</div>' +
+    '<div style="font-size:13px;opacity:.85;margin:10px 0 6px">DEPTH ' + summary.depth + ' COMPLETE · selectable next run</div>' +
+    '<div style="font-size:12px;color:#9fd8ff;margin:4px 0">GUNS KEPT: ' + gunLine + '</div>' +
+    '<div style="font-size:12px;color:#f4c430;margin:4px 0 14px">RELICS KEPT: ' + relicLine + '</div>' +
+    '<button data-act="menu">MAIN MENU</button>' +
+    '</div>';
+  runTimerRunning = false;
+  if (typeof playSfx === 'function') playSfx('pickup');
+  if (typeof flashToast === 'function') flashToast('EXTRACTED · ITEMS SECURED');
 }
 
 function currentWeapon() { return ARSENAL[weaponIndex]; }
-function setWeapon(i) {
+
+function updateWeaponLabel() {
+  const w = currentWeapon();
+  const el = document.getElementById('weaponLabel');
+  if (!el || !w) return;
+  const slot = weaponIndex + 1;
+  el.textContent = slot + '  ' + w.name;
+  el.style.display = '';
+  const rl = document.getElementById('rarityLabel');
+  if (rl) {
+    if (w.rarity && typeof RARITY !== 'undefined' && RARITY[w.rarity]) {
+      rl.textContent = RARITY[w.rarity].label;
+      rl.style.color = RARITY[w.rarity].color;
+      rl.style.display = '';
+    } else {
+      rl.textContent = 'STARTER';
+      rl.style.color = '#7d859c';
+      rl.style.display = '';
+    }
+  }
+}
+
+function isPistol(w) {
+  w = w || (typeof currentWeapon === 'function' ? currentWeapon() : null);
+  return !!(w && w.id === 'pistol');
+}
+function gunAmmoGrant(id) {
+  if (typeof AMMO_GRANT !== 'undefined' && AMMO_GRANT[id] != null) return AMMO_GRANT[id];
+  return 30;
+}
+function gunAmmoMax(id) { return 9999; }
+function getWeaponReserve(id) { return player.ammo | 0; }
+function setWeaponReserve(id, n) {
+  player.ammo = Math.max(0, n | 0);
+}
+
+function giveDeployAmmo() {
+  // Set reserve/mag defensively: if anything below throws (a relic hook,
+  // a malformed weapon entry, etc.) we still guarantee the player deploys
+  // with a full reserve and a usable mag instead of silently landing on 0/0.
+  player.ammo = 200;
+  player.maxAmmo = 9999;
+  player.reloadTimer = 0;
+  let size = 12;
+  try {
+    const w = (typeof currentWeapon === 'function') ? currentWeapon() : (typeof ARSENAL !== 'undefined' ? ARSENAL[weaponIndex] : null);
+    if (w) {
+      size = (typeof effectiveMagSize === 'function') ? effectiveMagSize(w) : (w.magSize || 12);
+    }
+  } catch (e) {
+    console.warn('giveDeployAmmo: mag size calc failed, falling back to 12', e);
+    size = 12;
+  }
+  size = size | 0;
+  player.mag = size > 0 ? size : 12;
+  if (!(player.ammo > 0)) player.ammo = 200; // absolute last-resort guard
+}
+
+function syncAmmoHud() {
+  // player.ammo is the single source of truth for reserve
+  player.maxAmmo = 9999;
+  if (player.ammo == null || isNaN(player.ammo)) player.ammo = 0;
+}
+
+function fillMagFromReserve(w) {
+  w = w || currentWeapon();
+  if (!w) return;
+  const size = (typeof effectiveMagSize === 'function') ? effectiveMagSize(w) : (w.magSize || 12);
+  // Pistol: always full mag, never spends reserve
+  if (isPistol(w)) {
+    player.mag = size;
+    return;
+  }
+  const need = size - (player.mag | 0);
+  if (need <= 0) { player.mag = size; return; }
+  const take = Math.min(need, player.ammo | 0);
+  player.ammo = (player.ammo | 0) - take;
+  player.mag = (player.mag | 0) + take;
+}
+
+function grantAmmoPickup() {
+  // Flat restock to shared reserve
+  const grant = 40;
+  const before = player.ammo | 0;
+  player.ammo = before + grant;
+  return player.ammo - before;
+}
+
+function beginReload(silent) {
+  const w = currentWeapon();
+  const size = (typeof effectiveMagSize === 'function') ? effectiveMagSize(w) : (w.magSize || 12);
+  if (player.reloadTimer > 0) return;
+  if (player.mag >= size) return;
+  if (isPistol(w)) {
+    player.mag = size;
+    return;
+  }
+  if ((player.ammo | 0) <= 0) {
+    if (!silent) flashToast('NO RESERVE AMMO');
+    return;
+  }
+  player.reloadTimer = w.reloadTime || 45;
+  if (!silent) flashToast('RELOADING…');
+}
+
+function setWeapon(i, opts) {
+  opts = opts || {};
   const n = ARSENAL.length;
   const idx = ((i % n) + n) % n;
   if (!unlockedWeapons.has(ARSENAL[idx].id)) {
-    flashToast(ARSENAL[idx].name + ' LOCKED');
-    return;
+    if (!opts.quiet) flashToast(ARSENAL[idx].name + ' LOCKED');
+    return false;
   }
+  if (weaponIndex === idx && !opts.force) {
+    const w = currentWeapon();
+    if (player.mag <= 0 && player.reloadTimer <= 0) fillMagFromReserve(w);
+    updateWeaponLabel();
+    return true;
+  }
+  player.reloadTimer = 0;
   weaponIndex = idx;
-  document.getElementById('weaponLabel').textContent = currentWeapon().name;
+  const w = currentWeapon();
+  if (isPistol(w)) {
+    const size = (typeof effectiveMagSize === 'function') ? effectiveMagSize(w) : (w.magSize || 12);
+    player.mag = size;
+  } else {
+    player.mag = 0;
+    fillMagFromReserve(w);
+    if ((player.mag | 0) <= 0 && (player.ammo | 0) > 0) fillMagFromReserve(w);
+  }
+  updateWeaponLabel();
+  if (!opts.quiet) flashToast(w.name);
+  return true;
 }
+
 function cycleWeapon(dir) {
   const n = ARSENAL.length;
   let idx = weaponIndex;
   for (let i = 0; i < n; i++) {
     idx = ((idx + dir) % n + n) % n;
     if (unlockedWeapons.has(ARSENAL[idx].id)) {
-      weaponIndex = idx;
-      document.getElementById('weaponLabel').textContent = currentWeapon().name;
+      setWeapon(idx);
       return;
     }
   }
 }
-setWeapon(0);
+
+function setWeaponBySlot(slot1toN) {
+  const unlocked = ARSENAL.filter(w => unlockedWeapons.has(w.id));
+  const i = slot1toN - 1;
+  if (i < 0 || i >= unlocked.length) {
+    flashToast('NO WEAPON ' + slot1toN);
+    return;
+  }
+  const idx = ARSENAL.findIndex(w => w.id === unlocked[i].id);
+  if (idx >= 0) setWeapon(idx);
+}
+
+setWeapon(0, { quiet: true, force: true });
 
 function key(x, y) { return x + ',' + y; }
-function doorLocked(nk) { return nk === bossKey && !player.hasBossKey; }
+function doorLocked(nk) {
+  if (!nk) return true;
+  if (nk === bossKey && !player.hasBossKey) return true;
+  // Exit hub sealed until boss is dead (by key or by room type)
+  const dest = rooms[nk];
+  if (dest && dest.type === 'exithub' && !bossDefeatedThisDepth) return true;
+  if (exitHubKey && nk === exitHubKey && !bossDefeatedThisDepth) return true;
+  return false;
+}
+
+function isChoiceExitDepth(d) {
+  d = d != null ? d : (typeof currentDepth === 'function' ? currentDepth() : 1);
+  return CHOICE_EXIT_DEPTHS.indexOf(d | 0) >= 0;
+}
+
+/**
+ * Build walk-in pads for the exit hub.
+ * Normal depths: EXFIL (left) + CONTINUE (right).
+ * Choice depths (5/10/15): two story-choice pads on top + elevators below (elevators
+ * stay inactive until a choice is confirmed).
+ */
+function buildExitHubZones(choiceMode, depth) {
+  const zones = [];
+  // Elevator pads (always present) — walk into these squares
+  zones.push({
+    id: 'exfil',
+    kind: 'elevator',
+    label: 'EXFIL',
+    sub: 'LEAVE · SAVE RUN',
+    x: W * 0.28, y: H * 0.58, w: 160, h: 110,
+    color: '#8fe0c9'
+  });
+  zones.push({
+    id: 'continue',
+    kind: 'elevator',
+    label: depth >= FINAL_NORMAL_DEPTH ? 'DEEPER' : 'CONTINUE',
+    sub: depth >= FINAL_NORMAL_DEPTH ? 'SECRET PATH' : 'NEXT DEPTH',
+    x: W * 0.72, y: H * 0.58, w: 160, h: 110,
+    color: '#f4c430'
+  });
+
+  if (choiceMode) {
+    const cfg = getExitChoiceConfig(depth);
+    const opts = (cfg && cfg.options) ? cfg.options : [
+      { id: 'a', label: 'OPTION A', sub: '' },
+      { id: 'b', label: 'OPTION B', sub: '' }
+    ];
+    zones.push({
+      id: 'choice_' + (opts[0].id || 'a'),
+      kind: 'choice',
+      choiceId: opts[0].id || 'a',
+      label: opts[0].label || 'A',
+      sub: opts[0].sub || '',
+      x: W * 0.28, y: H * 0.28, w: 140, h: 70,
+      color: '#9fd8ff'
+    });
+    zones.push({
+      id: 'choice_' + (opts[1].id || 'b'),
+      kind: 'choice',
+      choiceId: opts[1].id || 'b',
+      label: opts[1].label || 'B',
+      sub: opts[1].sub || '',
+      x: W * 0.72, y: H * 0.28, w: 140, h: 70,
+      color: '#c96b4f'
+    });
+  }
+  return zones;
+}
+
+function getExitChoiceConfig(depth) {
+  const data = (typeof STORY_DATA !== 'undefined') ? STORY_DATA : null;
+  if (!data || !data.exitChoices) return null;
+  // Exact depth only (5, 10, 15) — no cascade
+  const d = depth | 0;
+  return data.exitChoices[d] || data.exitChoices[String(d)] || null;
+}
+
+/** Look up one option from the current depth's exitChoices. */
+function getExitChoiceOption(choiceId, depth) {
+  const cfg = getExitChoiceConfig(depth);
+  if (!cfg || !cfg.options) return null;
+  for (let i = 0; i < cfg.options.length; i++) {
+    if (cfg.options[i].id === choiceId) return cfg.options[i];
+  }
+  return null;
+}
+
+/**
+ * Always attach an exit hub to the boss room.
+ * Prefers an empty cell; if the grid is full, reclaims a non-critical neighbor.
+ */
+function placeExitHubRoom(dirs) {
+  if (!bossKey || !rooms[bossKey]) return;
+  const [bx, by] = bossKey.split(',').map(Number);
+  const depthNow = (typeof currentDepth === 'function') ? currentDepth() : 1;
+  const choiceMode = isChoiceExitDepth(depthNow);
+
+  function makeHub(x, y) {
+    return {
+      x: x, y: y,
+      type: 'exithub',
+      cleared: true,
+      doors: {},
+      enemies: [], barrels: [], chests: [], keyItem: null,
+      visited: false, pickups: [],
+      columns: [], hazards: [], hazardGrid: null,
+      floorTile: 'floor3',
+      wallTile: 'wall1',
+      choiceMode: choiceMode,
+      choiceMade: !choiceMode, // non-choice depths: elevators ready immediately
+      zones: buildExitHubZones(choiceMode, depthNow)
+    };
+  }
+
+  function tryLink(dx, dy, d1, d2, allowReclaim) {
+    const nx = bx + dx, ny = by + dy;
+    if (nx < 0 || ny < 0 || nx >= GRID || ny >= GRID) return false;
+    const nk = key(nx, ny);
+    const existing = rooms[nk];
+    if (existing) {
+      if (!allowReclaim) return false;
+      // Never reclaim start, boss, bosshall, or another exit
+      if (nk === startKey || nk === bossKey) return false;
+      if (existing.type === 'bosshall' || existing.type === 'boss' || existing.type === 'exithub') return false;
+      // Detach neighbors pointing at this cell
+      for (const k of Object.keys(rooms)) {
+        const r = rooms[k];
+        if (!r.doors) continue;
+        for (const d of Object.keys(r.doors)) {
+          if (r.doors[d] === nk) delete r.doors[d];
+        }
+      }
+      delete rooms[nk];
+    }
+    rooms[nk] = makeHub(nx, ny);
+    rooms[bossKey].doors[d1] = nk;
+    rooms[nk].doors[d2] = bossKey;
+    exitHubKey = nk;
+    return true;
+  }
+
+  // 1) Empty cells first (prefer dirs the boss is not already using)
+  const shuffled = (dirs || [
+    [0, -1, 'n', 's'], [0, 1, 's', 'n'], [1, 0, 'e', 'w'], [-1, 0, 'w', 'e']
+  ]).slice().sort(() => Math.random() - 0.5);
+  for (const [dx, dy, d1, d2] of shuffled) {
+    if (tryLink(dx, dy, d1, d2, false)) return;
+  }
+  // 2) Reclaim a normal neighbor if needed
+  for (const [dx, dy, d1, d2] of shuffled) {
+    if (tryLink(dx, dy, d1, d2, true)) return;
+  }
+  console.warn('placeExitHubRoom: could not place exit hub');
+}
+
+function pointInZone(px, py, z) {
+  const hw = z.w / 2, hh = z.h / 2;
+  return px >= z.x - hw && px <= z.x + hw && py >= z.y - hh && py <= z.y + hh;
+}
 
 function isHallType(room) {
+  if (room && room.type === 'bosshall' && room.bossHub) return false;
   return room && (room.type === 'hallway' || room.type === 'bosshall');
 }
 
-/** Resolve hallway axis from room data / doors. */
+function buildBossHubHazards(room) {
+  const hazards = [];
+  const x0 = WALL, y0 = WALL, x1 = W - WALL, y1 = H - WALL;
+  const cols = Math.floor((x1 - x0) / TILE_SIZE);
+  const rows = Math.floor((y1 - y0) / TILE_SIZE);
+  const cx = W / 2, cy = H / 2;
+  // Center pad ~7 tiles (small square)
+  const padHalf = TILE_SIZE * 3.5;
+  // Corridor half-width matches door
+  const hallHalf = DOOR_W / 2 + TILE_SIZE * 0.5;
+
+  const inCenter = (px, py) => Math.abs(px - cx) <= padHalf && Math.abs(py - cy) <= padHalf;
+  const inN = (px, py) => Math.abs(px - cx) <= hallHalf && py <= cy;
+  const inS = (px, py) => Math.abs(px - cx) <= hallHalf && py >= cy;
+  const inW = (px, py) => Math.abs(py - cy) <= hallHalf && px <= cx;
+  const inE = (px, py) => Math.abs(py - cy) <= hallHalf && px >= cx;
+
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const tx = x0 + col * TILE_SIZE;
+      const ty = y0 + row * TILE_SIZE;
+      const px = tx + TILE_SIZE / 2, py = ty + TILE_SIZE / 2;
+      const safe = inCenter(px, py) || inN(px, py) || inS(px, py) || inW(px, py) || inE(px, py);
+      if (!safe) {
+        hazards.push({ x: tx, y: ty, w: TILE_SIZE, h: TILE_SIZE, blocking: true });
+      }
+    }
+  }
+  return hazards;
+}
+
 function resolveHallAxis(room) {
   if (room.hallAxis) return room.hallAxis;
   const ds = Object.keys(room.doors || {});
@@ -100,17 +533,11 @@ function resolveHallAxis(room) {
   return 'v';
 }
 
-/**
- * Walkable floor bounds for skinny door-to-door hallways.
- * Vertical: 1-tile wall each side of corridor.
- * Horizontal: 2-tile wall on top, 1-tile on bottom / sides.
- */
 function getHallBounds(room) {
   const axis = resolveHallAxis(room);
   const half = HALL_THICKNESS / 2;
 
   if (axis === 'h') {
-    // Horizontal corridor centered; top wall is 2 tiles, bottom 1 tile
     const structH = (HALL_WALL_TOP + HALL_TILES + HALL_WALL_BOTTOM) * TILE_SIZE;
     const topWall = H / 2 - structH / 2;
     const floorTop = topWall + HALL_WALL_TOP * TILE_SIZE;
@@ -174,7 +601,6 @@ function hallSpawnPos(room) {
   return { x: (b.left + b.right) / 2, y: WALL + 80 + Math.random() * (H - WALL * 2 - 160) };
 }
 
-/** Large column layouts (COLUMN_TILES x COLUMN_TILES) that break up room geometry. */
 function generateColumns(roomType) {
   const s = TILE_SIZE * COLUMN_TILES; // 4x4 by default (2x previous size)
   const margin = WALL + 56;
@@ -223,12 +649,41 @@ function generateColumns(roomType) {
   }));
 }
 
-/**
- * Build intentional kill-tile layouts from ROOM_LAYOUTS in config.js.
- * Returns an array of {x,y,w,h} hazard rects (tile-aligned). Non-blocking
- * hazards chip HP on contact; 'blocking' ones are impassable holes.
- * Door mouths are always kept clear so rooms stay traversable.
- */
+function buildHazardGrid(hazards) {
+  if (!hazards || !hazards.length) return null;
+  const cols = Math.floor((W - 2 * WALL) / TILE_SIZE);
+  const rows = Math.floor((H - 2 * WALL) / TILE_SIZE);
+  const data = new Uint8Array(cols * rows);
+  for (let i = 0; i < hazards.length; i++) {
+    const h = hazards[i];
+    const c = ((h.x - WALL) / TILE_SIZE) | 0;
+    const r = ((h.y - WALL) / TILE_SIZE) | 0;
+    if (c >= 0 && c < cols && r >= 0 && r < rows) data[r * cols + c] = 1;
+  }
+  return { cols, rows, data };
+}
+
+function pointOnHazard(room, x, y, r) {
+  const g = room.hazardGrid;
+  if (g) {
+    const minC = Math.max(0, ((x - r - WALL) / TILE_SIZE) | 0);
+    const maxC = Math.min(g.cols - 1, ((x + r - WALL) / TILE_SIZE) | 0);
+    const minR = Math.max(0, ((y - r - WALL) / TILE_SIZE) | 0);
+    const maxR = Math.min(g.rows - 1, ((y + r - WALL) / TILE_SIZE) | 0);
+    for (let row = minR; row <= maxR; row++) {
+      const base = row * g.cols;
+      for (let col = minC; col <= maxC; col++) {
+        if (g.data[base + col]) return true;
+      }
+    }
+    return false;
+  }
+  for (const h of (room.hazards || [])) {
+    if (x + r > h.x && x - r < h.x + h.w && y + r > h.y && y - r < h.y + h.h) return true;
+  }
+  return false;
+}
+
 function buildLayoutHazards(room, layout) {
   if (!layout || layout.kind === 'plain') return [];
 
@@ -240,7 +695,6 @@ function buildLayoutHazards(room, layout) {
 
   const isDoorMouth = (tx, ty) => {
     const px = tx + TILE_SIZE / 2, py = ty + TILE_SIZE / 2;
-    // Use full DOOR_W half-width + 1 tile padding so the player always fits
     const half = DOOR_W / 2 + TILE_SIZE;
     if (room.doors && room.doors.n && Math.abs(px - cx) < half && ty < y0 + TILE_SIZE * 4) return true;
     if (room.doors && room.doors.s && Math.abs(px - cx) < half && ty > y1 - TILE_SIZE * 4) return true;
@@ -249,14 +703,11 @@ function buildLayoutHazards(room, layout) {
     return false;
   };
 
-  // Every non-plain layout tile is an impassable hole — blocks movement like
-  // a wall, never damages the player. No tile in the game can hurt the player.
   const pushHole = (tx, ty) => {
     if (isDoorMouth(tx, ty)) return;
     hazards.push({ x: tx, y: ty, w: TILE_SIZE, h: TILE_SIZE, blocking: true });
   };
 
-  // Safe corridors: full door width from wall to center (no narrow bridges)
   const corridorHalf = DOOR_W / 2 + TILE_SIZE * 1.5;
   const inDoorCorridor = (tx, ty) => {
     const px = tx + TILE_SIZE / 2, py = ty + TILE_SIZE / 2;
@@ -270,7 +721,6 @@ function buildLayoutHazards(room, layout) {
   const kind = layout.kind;
 
   if (kind === 'safe_circle') {
-    // Solid disk + wide door spokes (no C-shaped bites into the pad)
     const R = (layout.radiusTiles || 13) * TILE_SIZE;
     for (let row = 0; row < rows; row++) {
       for (let col = 0; col < cols; col++) {
@@ -306,7 +756,6 @@ function buildLayoutHazards(room, layout) {
       }
     }
   } else if (kind === 'loop') {
-    // Safe ring + door spokes to center; kill in the hole and outside the ring
     const path = layout.pathTiles || 3;
     const inner = (layout.innerRadiusTiles || 5) * TILE_SIZE;
     const outer = inner + path * TILE_SIZE;
@@ -319,9 +768,6 @@ function buildLayoutHazards(room, layout) {
       }
     }
   } else if (kind === 'islands') {
-    // Default all kill, then punch safe pads + door corridors.
-    // Each outer pad also gets a spoke bridge back to the center pad so
-    // every island is actually walkable-to, not a stranded floating rock.
     const pads = [];
     const n = layout.count || 4;
     const padR = (layout.padTiles || 5) * TILE_SIZE;
@@ -407,7 +853,6 @@ function pickLayoutForRoom(type) {
 }
 
 function circleHitsColumn(cx, cy, cr, col) {
-  // Clamp circle center to column AABB, then compare distance
   const nx = Math.max(col.x, Math.min(cx, col.x + col.w));
   const ny = Math.max(col.y, Math.min(cy, col.y + col.h));
   const dx = cx - nx, dy = cy - ny;
@@ -446,12 +891,48 @@ function resolveColumnCollision(ent) {
 
 function resolveHazardBlockCollision(ent) {
   const room = rooms[curKey];
-  if (!room || !room.hazards) return;
-  for (const h of room.hazards) {
+  if (!room) return;
+  const g = room.hazardGrid;
+  if (g) {
+    const minC = Math.max(0, ((ent.x - ent.r - WALL) / TILE_SIZE) | 0);
+    const maxC = Math.min(g.cols - 1, ((ent.x + ent.r - WALL) / TILE_SIZE) | 0);
+    const minR = Math.max(0, ((ent.y - ent.r - WALL) / TILE_SIZE) | 0);
+    const maxR = Math.min(g.rows - 1, ((ent.y + ent.r - WALL) / TILE_SIZE) | 0);
+    for (let row = minR; row <= maxR; row++) {
+      const base = row * g.cols;
+      for (let col = minC; col <= maxC; col++) {
+        if (!g.data[base + col]) continue;
+        const hx = WALL + col * TILE_SIZE;
+        const hy = WALL + row * TILE_SIZE;
+        const hw = TILE_SIZE, hh = TILE_SIZE;
+        if (!(ent.x + ent.r > hx && ent.x - ent.r < hx + hw &&
+              ent.y + ent.r > hy && ent.y - ent.r < hy + hh)) continue;
+        const nearestX = Math.max(hx, Math.min(ent.x, hx + hw));
+        const nearestY = Math.max(hy, Math.min(ent.y, hy + hh));
+        let dx = ent.x - nearestX;
+        let dy = ent.y - nearestY;
+        if (dx === 0 && dy === 0) {
+          const left = ent.x - hx, right = hx + hw - ent.x;
+          const top = ent.y - hy, bot = hy + hh - ent.y;
+          const m = Math.min(left, right, top, bot);
+          if (m === left) ent.x = hx - ent.r;
+          else if (m === right) ent.x = hx + hw + ent.r;
+          else if (m === top) ent.y = hy - ent.r;
+          else ent.y = hy + hh + ent.r;
+        } else {
+          const dist = Math.hypot(dx, dy) || 1;
+          const push = ent.r - dist + 0.5;
+          ent.x += (dx / dist) * push;
+          ent.y += (dy / dist) * push;
+        }
+      }
+    }
+    return;
+  }
+  for (const h of (room.hazards || [])) {
     if (!h.blocking) continue;
     if (!(ent.x + ent.r > h.x && ent.x - ent.r < h.x + h.w &&
           ent.y + ent.r > h.y && ent.y - ent.r < h.y + h.h)) continue;
-    // Push out along the smallest penetration axis, same approach as columns
     const nearestX = Math.max(h.x, Math.min(ent.x, h.x + h.w));
     const nearestY = Math.max(h.y, Math.min(ent.y, h.y + h.h));
     let dx = ent.x - nearestX;
@@ -473,7 +954,6 @@ function resolveHazardBlockCollision(ent) {
   }
 }
 
-/** Random free-ish point in a room that doesn't overlap columns / hazards / circle edge. */
 function safeRoomPos(room, radius) {
   const cr = room.circleR || Math.min(W, H) / 2 - WALL - 8;
   for (let tries = 0; tries < 50; tries++) {
@@ -483,11 +963,7 @@ function safeRoomPos(room, radius) {
     for (const col of (room.columns || [])) {
       if (circleHitsColumn(x, y, radius + 4, col)) { ok = false; break; }
     }
-    for (const h of (room.hazards || [])) {
-      if (x + radius > h.x && x - radius < h.x + h.w && y + radius > h.y && y - radius < h.y + h.h) {
-        ok = false; break;
-      }
-    }
+    if (pointOnHazard(room, x, y, radius)) ok = false;
     if (room.shape === 'circle' && Math.hypot(x - W / 2, y - H / 2) > cr - radius - 12) ok = false;
     // Keep clear of door zones
     if (Math.abs(x - W / 2) < DOOR_W && (y < WALL + 40 || y > H - WALL - 40)) ok = false;
@@ -497,18 +973,55 @@ function safeRoomPos(room, radius) {
   return { x: W / 2, y: H / 2 + 60 };
 }
 
+/** Map depth → boss type id (1–9). */
+function pickBossTypeForDepth(d) {
+  d = d | 0;
+  if (d <= 4) return Math.random() < 0.5 ? 1 : 2;
+  if (d === 5) return 3;
+  if (d <= 9) return Math.random() < 0.5 ? 4 : 5;
+  if (d === 10) return 6;
+  if (d <= 14) return Math.random() < 0.5 ? 7 : 8;
+  return 9; // depth 15+
+}
+
+const BOSS_TYPE_NAMES = {
+  1: 'MOVER',
+  2: 'NEST',
+  3: 'PACK LEADER',
+  4: 'BLINKER',
+  5: 'ORBITER',
+  6: 'TANK',
+  7: 'STRIKER',
+  8: 'OVERSEER',
+  9: 'APEX'
+};
+
 function spawnBoss(room) {
   if (typeof playMusic === 'function') playMusic('boss');
   if (room.bossSpawned) return;
   room.bossSpawned = true;
-  room.enemies.push({
-    x: W / 2, y: H / 2 - 40, hp: BOSS_HP, maxHp: BOSS_HP, r: 42, speed: 1.1,
-    type: 'boss', spriteBase: room.spriteBase || 'bossSkull', mode: 'chase', modeTimer: 90,
-    shootTimer: 70, burstTimer: 200, dashTimer: 220, enraged: false, alive: true
-  });
-  // Nudge off columns if needed
-  resolveColumnCollision(room.enemies[room.enemies.length - 1]);
-  flashToast('BOSS AWAKENS');
+  const d = (typeof currentDepth === 'function') ? currentDepth() : 1;
+  const bossType = room.bossType || pickBossTypeForDepth(d);
+  room.bossType = bossType;
+  const bhp = (typeof depthBossHp === 'function') ? depthBossHp() : BOSS_HP;
+  // Scale HP slightly by type
+  const hpMul = ({ 2: 0.9, 5: 0.95, 6: 1.35, 7: 0.85, 9: 1.5 }[bossType]) || 1;
+  const hp = Math.round(bhp * hpMul);
+  const stationary = (bossType === 2);
+  const en = {
+    x: W / 2, y: H / 2 - 40, hp: hp, maxHp: hp, r: stationary ? 34 : 30,
+    speed: stationary ? 0 : (bossType === 6 ? 0.7 : bossType === 7 ? 1.7 : 1.25),
+    type: 'boss', spriteBase: room.spriteBase || ('boss' + bossType),
+    bossType: bossType,
+    mode: stationary ? 'sit' : 'chase', modeTimer: 70,
+    flankSide: Math.random() < 0.5 ? 1 : -1,
+    shootTimer: 40, burstTimer: 140, dashTimer: 160, spawnTimer: 90,
+    enraged: false, alive: true, cooldown: 30, phase: 1
+  };
+  room.enemies.push(en);
+  resolveColumnCollision(en);
+  const name = BOSS_TYPE_NAMES[bossType] || 'BOSS';
+  flashToast('BOSS · ' + name);
   spawnParticles(W / 2, H / 2 - 40, '#c96b4f', 20);
 }
 
@@ -518,8 +1031,7 @@ function generateDungeon() {
   startKey = key(cx, cy);
   rooms[startKey] = { x: cx, y: cy, type: 'start', cleared: true, doors: {}, enemies: [], barrels: [], chests: [], keyItem: null, visited: true, pickups: [] };
 
-  // Target a few more cells so intermediate hallways don't shrink the dungeon too much
-  const roomCount = 12 + Math.floor(Math.random() * 4);
+  const roomCount = (typeof depthRoomCount === 'function') ? depthRoomCount() : (12 + Math.floor(Math.random() * 4));
   const dirs = [[0, -1, 'n', 's'], [0, 1, 's', 'n'], [1, 0, 'e', 'w'], [-1, 0, 'w', 'e']];
   const placed = [[cx, cy]];
   const frontier = [[cx, cy]];
@@ -535,8 +1047,6 @@ function generateDungeon() {
       const nk = key(nx, ny);
       if (rooms[nk]) continue;
 
-      // ~30%: insert an empty hallway between parent and the new content room
-      // (two steps in the same direction when the far cell is free)
       const rx = nx + dx, ry = ny + dy;
       const canHall =
         Math.random() < 0.32 &&
@@ -596,8 +1106,6 @@ function generateDungeon() {
   }
 
   // --- boss + hallway antechamber ---
-  // Farthest room becomes a short hallway; a new boss room is attached beyond it.
-  // Door into the hallway looks like a boss door; door from hallway → boss requires the key.
   const dist = {}; dist[startKey] = 0;
   const qq = [startKey];
   while (qq.length) {
@@ -609,6 +1117,12 @@ function generateDungeon() {
   }
   let farthest = startKey, maxd = -1;
   for (const k in dist) if (dist[k] > maxd) { maxd = dist[k]; farthest = k; }
+  // Prefer a non-start room as farthest; if only start exists, still force a boss
+  if (farthest === startKey) {
+    for (const k in rooms) {
+      if (k !== startKey) { farthest = k; break; }
+    }
+  }
 
   const [fx, fy] = farthest.split(',').map(Number);
   const hallDirs = dirs.slice().sort(() => Math.random() - 0.5);
@@ -620,7 +1134,6 @@ function generateDungeon() {
     if (nx < 0 || ny < 0 || nx >= GRID || ny >= GRID) continue;
     const nk = key(nx, ny);
     if (rooms[nk]) continue;
-    // farthest becomes boss antechamber; new cell is the real boss room
     rooms[farthest].type = 'bosshall';
     rooms[farthest].cleared = true;
     rooms[farthest].enemies = [];
@@ -628,10 +1141,8 @@ function generateDungeon() {
     rooms[farthest].chests = [];
     rooms[farthest].pickups = [];
     rooms[farthest].keyItem = null;
-    // Straight corridor toward the boss only — L-shaped bosshalls looked broken
-    // and misaligned doors. Extra side doors still work; player just walks the main strip.
-    const towardBoss = (d1 === 'n' || d1 === 's') ? 'v' : 'h';
-    rooms[farthest].hallAxis = towardBoss;
+    rooms[farthest].hallAxis = null;
+    rooms[farthest].bossHub = true;
     rooms[nk] = {
       x: nx, y: ny, type: 'boss', cleared: false, doors: {},
       enemies: [], barrels: [], chests: [], keyItem: null, visited: false, pickups: []
@@ -644,14 +1155,50 @@ function generateDungeon() {
     break;
   }
   if (!placedHallway) {
-    // fallback: no free adjacent cell — classic single boss room
-    rooms[bossKey].type = 'boss';
-    hallwayKey = null;
+    // Always ensure a dedicated boss room exists
+    if (farthest === startKey) {
+      // Carve a boss cell next to start if dungeon is tiny
+      for (const [dx, dy, d1, d2] of hallDirs) {
+        const nx = fx + dx, ny = fy + dy;
+        if (nx < 0 || ny < 0 || nx >= GRID || ny >= GRID) continue;
+        const nk = key(nx, ny);
+        if (rooms[nk]) continue;
+        rooms[nk] = {
+          x: nx, y: ny, type: 'boss', cleared: false, doors: {},
+          enemies: [], barrels: [], chests: [], keyItem: null, visited: false, pickups: []
+        };
+        rooms[startKey].doors[d1] = nk;
+        rooms[nk].doors[d2] = startKey;
+        bossKey = nk;
+        hallwayKey = null;
+        placedHallway = true;
+        break;
+      }
+    }
+    if (!placedHallway) {
+      rooms[bossKey].type = 'boss';
+      rooms[bossKey].cleared = false;
+      hallwayKey = null;
+    }
   }
+  // Final guarantee
+  if (!bossKey || !rooms[bossKey]) {
+    bossKey = farthest;
+    rooms[bossKey].type = 'boss';
+    rooms[bossKey].cleared = false;
+  } else {
+    rooms[bossKey].type = 'boss';
+  }
+
+  // --- exit hub always attached to boss (CONTINUE / EXFIL pads) ---
+  exitHubKey = null;
+  bossDefeatedThisDepth = false;
+  exitConfirmPending = null;
+  placeExitHubRoom(dirs);
 
   const usedKeys = new Set([startKey, bossKey]);
   if (hallwayKey) usedKeys.add(hallwayKey);
-  // Protect intermediate hallways from being converted into key/chest rooms
+  if (exitHubKey) usedKeys.add(exitHubKey);
   for (const k in rooms) {
     if (rooms[k].type === 'hallway' || rooms[k].type === 'bosshall') usedKeys.add(k);
   }
@@ -673,21 +1220,19 @@ function generateDungeon() {
     return room;
   }
   claimRoom('key');
+  // Exactly 1 chest per level (weapon only). Relics only drop from bosses.
   claimRoom('chest');
-  // At most one extra armory (still single chest each)
-  if (Math.random() < 0.5) claimRoom('chest');
 
   for (const k in rooms) {
     const r = rooms[k];
     r.floorTile = 'floor' + (1 + Math.floor(Math.random() * 3));
     r.wallTile = 'wall' + (1 + Math.floor(Math.random() * 4));
     // --- authored layout (kill tiles, floor patterns) ---
-    const picked = pickLayoutForRoom(r.type);
+    const picked = pickLayoutForRoom(r.type === 'relic' ? 'chest' : r.type);
     r.layoutId = picked.id;
     r.layout = picked.layout;
     r.shape = 'rect';
     r.circleR = Math.min(W, H) / 2 - WALL - 8;
-    // Visual circle wall only for safe_circle layouts (play space is still rectangular with kill rim)
     if (picked.layout.kind === 'safe_circle' || picked.layout.kind === 'loop') {
       r.shape = 'rect'; // collision uses hazards, not geometric circle clip
     }
@@ -698,10 +1243,28 @@ function generateDungeon() {
       r.enemies = [];
       r.barrels = [];
       r.chests = [];
-      r.pickups = [];
       r.keyItem = null;
       r.columns = [];
-      r.hazards = buildLayoutHazards(r, r.layout);
+      r.hazards = buildBossHubHazards(r);
+      r.hazardGrid = buildHazardGrid(r.hazards);
+      r.pickups = [
+        { x: W / 2 - 28, y: H / 2, r: 12, kind: 'health', taken: false },
+        { x: W / 2 + 28, y: H / 2, r: 12, kind: 'ammo', taken: false }
+      ];
+      continue;
+    }
+    if (r.type === 'exithub') {
+      r.floorTile = 'floor3';
+      r.wallTile = 'wall1';
+      r.cleared = true;
+      r.enemies = [];
+      r.barrels = [];
+      r.chests = [];
+      r.keyItem = null;
+      r.columns = [];
+      r.hazards = [];
+      r.hazardGrid = null;
+      r.pickups = [];
       continue;
     }
     if (r.type === 'hallway') {
@@ -712,16 +1275,18 @@ function generateDungeon() {
       r.enemies = [];
       r.columns = [];
       r.hazards = buildLayoutHazards(r, r.layout);
-      // Rarely a single enemy sitting in the corridor (on safe floor)
+      r.hazardGrid = buildHazardGrid(r.hazards);
       if (Math.random() < HALL_ENEMY_CHANCE) {
         const isShooter = Math.random() < 0.4;
         const pos = hallSpawnPos(r);
         // Nudge off kill tiles
-        if (!(r.hazards || []).some(h =>
-          pos.x > h.x && pos.x < h.x + h.w && pos.y > h.y && pos.y < h.y + h.h)) {
+        if (!pointOnHazard(r, pos.x, pos.y, 16)) {
+          const hs = (typeof depthEnemyHpScale === 'function') ? depthEnemyHpScale() : 1;
+          const baseHp = isShooter ? 3 : 4;
+          const hp = Math.max(1, Math.round(baseHp * hs));
           r.enemies.push({
             x: pos.x, y: pos.y,
-            hp: isShooter ? 3 : 4, maxHp: isShooter ? 3 : 4, r: 16,
+            hp, maxHp: hp, r: 16,
             speed: isShooter ? 0.55 : 1.4, type: isShooter ? 'shooter' : 'slime',
             cooldown: Math.random() * 60, alive: true
           });
@@ -735,35 +1300,57 @@ function generateDungeon() {
     if (r.type === 'start') {
       r.cleared = true;
       r.hazards = [];
+      r.hazardGrid = null;
       r.columns = [];
       continue;
     }
 
-    // --- columns (large pillars) — skip on heavy kill layouts so paths stay readable ---
     r.columns = [];
     const heavyKill = ['safe_circle', 'loop', 'islands', 'cross'].includes(picked.layout.kind);
     if (!heavyKill && (r.type === 'boss' || (r.type === 'normal' && Math.random() < 0.55) || (r.type === 'chest' && Math.random() < 0.4))) {
       r.columns = generateColumns(r.type);
     }
 
-    // --- intentional kill-tile layout (not random scatter) ---
     r.hazards = buildLayoutHazards(r, r.layout);
+    r.hazardGrid = buildHazardGrid(r.hazards);
 
     // --- enemies ---
+    const hpScale = (typeof depthEnemyHpScale === 'function') ? depthEnemyHpScale() : 1;
+    const countBonus = (typeof depthEnemyCountBonus === 'function') ? depthEnemyCountBonus() : 0;
     if (r.type === 'boss') {
-      // Boss spawns after a short delay when the player enters (see enterDoor / update)
       r.bossSpawnTimer = -1; // not started yet
       r.bossSpawned = false;
-      r.spriteBase = 'bossSkull'; // dedicated martian_boss art (see SPRITE_PATHS)
+      r.bossType = pickBossTypeForDepth(typeof currentDepth === 'function' ? currentDepth() : 1);
+      r.spriteBase = 'boss' + r.bossType;
       r.cleared = false;
+    } else if (r.type === 'relic') {
+      // Light guard presence — relic is the prize
+      const count = 1 + Math.floor(Math.random() * 2) + Math.min(1, countBonus);
+      for (let i = 0; i < count; i++) {
+        const isShooter = Math.random() < 0.5;
+        const pos = safeRoomPos(r, 16);
+        const baseHp = isShooter ? 3 : 4;
+        const hp = Math.max(1, Math.round(baseHp * hpScale));
+        r.enemies.push({
+          x: pos.x, y: pos.y,
+          hp, maxHp: hp, r: 16,
+          speed: isShooter ? 0.55 : 1.55, type: isShooter ? 'shooter' : 'slime',
+          cooldown: Math.random() * 60, alive: true
+        });
+      }
+      r.enemiesActive = r.enemies.length === 0;
+      r.enemySpawnTimer = -1;
+      r.cleared = r.enemies.length === 0;
     } else {
-      const count = 1 + Math.floor(Math.random() * 3);
+      const count = 1 + Math.floor(Math.random() * 3) + countBonus;
       for (let i = 0; i < count; i++) {
         const isShooter = Math.random() < 0.45;
         const pos = safeRoomPos(r, 16);
+        const baseHp = isShooter ? 3 : 4;
+        const hp = Math.max(1, Math.round(baseHp * hpScale));
         r.enemies.push({
           x: pos.x, y: pos.y,
-          hp: isShooter ? 3 : 4, maxHp: isShooter ? 3 : 4, r: 16,
+          hp, maxHp: hp, r: 16,
           speed: isShooter ? 0.55 : 1.55, type: isShooter ? 'shooter' : 'slime',
           cooldown: Math.random() * 60, alive: true
         });
@@ -774,7 +1361,7 @@ function generateDungeon() {
     }
 
     // --- barrels ---
-    if (r.type !== 'boss' && Math.random() < 0.6) {
+    if (r.type !== 'boss' && r.type !== 'relic' && Math.random() < 0.6) {
       const bCount = 1 + Math.floor(Math.random() * 2);
       for (let i = 0; i < bCount; i++) {
         const pos = safeRoomPos(r, 16);
@@ -798,7 +1385,8 @@ function generateDungeon() {
       }];
     }
 
-    if (r.type !== 'boss' && Math.random() < 0.55) {
+
+    if (r.type !== 'boss' && r.type !== 'bosshall' && Math.random() < 0.55) {
       const kind = Math.random() < 0.45 ? 'health' : 'ammo';
       const pos = safeRoomPos(r, 12);
       r.pickups.push({
@@ -810,12 +1398,22 @@ function generateDungeon() {
 
   curKey = startKey;
   player.x = W / 2; player.y = H / 2;
-  player.hp = player.maxHp;
-  player.ammo = STARTING_AMMO;
+  if (player.hp <= 0) player.hp = player.maxHp;
   player.hasBossKey = false;
+  // Rebuild in-run unlock set from bag
   unlockedWeapons = new Set(['pistol']);
-  weaponIndex = 0;
-  setWeapon(0);
+  if (typeof runBag !== 'undefined') {
+    if (runBag.loadoutGun) unlockedWeapons.add(runBag.loadoutGun);
+    (runBag.foundWeapons || []).forEach(id => unlockedWeapons.add(id));
+  }
+  if (!unlockedWeapons.has(ARSENAL[weaponIndex]?.id)) {
+    weaponIndex = 0;
+    if (runBag && runBag.loadoutGun) {
+      const i = ARSENAL.findIndex(w => w.id === runBag.loadoutGun);
+      if (i >= 0) weaponIndex = i;
+    }
+  }
+  // weapon + ammo applied by caller
 }
 
 // ════════════════════════════════════════
@@ -824,9 +1422,20 @@ function generateDungeon() {
 const keys = {};
 let DEBUG = false;
 window.addEventListener('keydown', e => {
+  // Dialogue captures input first
+  if (dialogueActive) {
+    if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); advanceDialogue(); return; }
+    if (e.key === 'Escape') { e.preventDefault(); skipDialogue(); return; }
+    // Block game controls while talking
+    return;
+  }
   keys[e.key.toLowerCase()] = true;
   if (e.key === ' ') { e.preventDefault(); tryFire(); }
-  if (e.key === '1') setWeapon(0);
+  // 1-5 = unlocked weapon slots; Q/E cycle; R reload
+  if (e.key >= '1' && e.key <= '5') setWeaponBySlot(parseInt(e.key, 10));
+  if (e.key === 'q' || e.key === 'Q') cycleWeapon(-1);
+  if (e.key === 'e' || e.key === 'E') cycleWeapon(1);
+  if (e.key === 'r' || e.key === 'R') beginReload(false);
   if (e.key === '`' || e.key === 'F3') { DEBUG = !DEBUG; flashToast(DEBUG ? 'DEBUG ON' : 'DEBUG OFF'); }
   if (e.key === 'Escape') { e.preventDefault(); togglePause(); }
 });
@@ -837,7 +1446,10 @@ canvas.addEventListener('mousemove', e => {
   mouse.x = (e.clientX - rect.left) * (canvas.width / rect.width);
   mouse.y = (e.clientY - rect.top) * (canvas.height / rect.height);
 });
-canvas.addEventListener('mousedown', () => { mouse.down = true; tryFire(); });
+canvas.addEventListener('mousedown', () => {
+  if (dialogueActive) { advanceDialogue(); return; }
+  mouse.down = true; tryFire();
+});
 canvas.addEventListener('mouseup', () => mouse.down = false);
 canvas.addEventListener('wheel', e => {
   e.preventDefault();
@@ -845,19 +1457,56 @@ canvas.addEventListener('wheel', e => {
 }, { passive: false });
 document.getElementById('msg').addEventListener('click', e => {
   if (e.target.tagName !== 'BUTTON') return;
+  const act = (e.target.getAttribute('data-act') || '').toLowerCase();
   const t = (e.target.textContent || '').toUpperCase();
-  if (t.includes('MENU')) location.reload();
-  else if (t.includes('MISSION 2')) { currentMission = 2; startMission(); }
-  else if (t.includes('MISSION 3') || t.includes('CONTINUE')) { currentMission = 3; startMission(); }
+  if (act === 'confirm-exit') {
+    if (typeof confirmExitAction === 'function') confirmExitAction();
+    return;
+  }
+  if (act === 'cancel-exit') {
+    if (typeof cancelExitConfirm === 'function') cancelExitConfirm();
+    return;
+  }
+  if (act === 'exfil' || t.includes('EXFIL')) {
+    if (typeof extractAndEndRun === 'function') extractAndEndRun();
+    return;
+  }
+  if (act === 'continue' || t.includes('CONTINUE')) {
+    if (typeof continueMissionDeeper === 'function') continueMissionDeeper();
+    return;
+  }
+  if (act === 'loadout' || t.includes('NEW RUN') || t.includes('RETRY')) {
+    if (typeof openMissionSelect === 'function') openMissionSelect();
+    else if (typeof openLoadoutScreen === 'function') openLoadoutScreen();
+    else if (typeof startMission === 'function') startMission();
+    return;
+  }
+  if (act === 'menu' || t.includes('MENU')) {
+    location.reload();
+    return;
+  }
+  // fallback
+  if (typeof openMissionSelect === 'function') openMissionSelect();
+  else if (typeof openLoadoutScreen === 'function') openLoadoutScreen();
   else if (typeof startMission === 'function') startMission();
-  else location.reload();
 });
 
 // ════════════════════════════════════════
 // MENUS (title screen + pause)
 // ════════════════════════════════════════
 function togglePause() {
-  if (!started || gameOver) return; // no pausing on the title screen or after death/victory
+  if (!started || gameOver || dialogueActive) return; // no pausing on title, death, or mid-dialogue
+  if (!paused) {
+    // entering pause — freeze timer
+    if (runTimerRunning) {
+      runTimerAccum += performance.now() - runTimerStart;
+      runTimerRunning = false;
+    }
+  } else {
+    // resuming
+    runTimerStart = performance.now();
+    runTimerRunning = true;
+  }
   paused = !paused;
   document.getElementById('pauseScreen').classList.toggle('show', paused);
 }
@@ -869,8 +1518,15 @@ document.getElementById('btnResume').addEventListener('click', togglePause);
 document.getElementById('btnRestart').addEventListener('click', () => location.reload());
 document.getElementById('btnMainMenu').addEventListener('click', () => location.reload());
 
+// Click dialogue box to advance
+(function () {
+  const box = document.getElementById('dialogueBox');
+  if (box) box.addEventListener('click', () => { if (dialogueActive) advanceDialogue(); });
+})();
+
 function tryFire() {
-  if (gameOver || !started || paused || player.shootCooldown > 0) return;
+  if (gameOver || !started || paused || dialogueActive || player.shootCooldown > 0) return;
+  if (player.reloadTimer > 0) return; // can't shoot while reloading
   const w = currentWeapon();
   const dx = mouse.x - player.x, dy = mouse.y - player.y;
   const len = Math.hypot(dx, dy) || 1;
@@ -883,12 +1539,21 @@ function tryFire() {
     doMeleeAttack(w, nx, ny);
     return;
   }
-  if (w.ammoCost > 0 && player.ammo < w.ammoCost) {
-    flashToast('NO AMMO');
-    return;
+
+  const cost = w.ammoCost != null ? w.ammoCost : 1;
+
+  if (isPistol(w)) {
+    const magSize = (typeof effectiveMagSize === 'function') ? effectiveMagSize(w) : (w.magSize || 12);
+    player.mag = magSize;
+  } else {
+    if (player.mag < cost) {
+      beginReload(false);
+      return;
+    }
+    player.mag -= cost;
   }
+
   player.shootCooldown = Math.max(4, Math.round(w.cooldown * cdScale));
-  if (w.ammoCost > 0) player.ammo -= w.ammoCost;
   gunAnimTimer = 8;
   gunFrame = 1;
   if (typeof playSfx === 'function') playSfx(gunSfxKey(w));
@@ -896,19 +1561,27 @@ function tryFire() {
   const pellets = w.pellets || 1;
   const spread = w.spread || 0;
   const shotDmg = Math.max(1, Math.round(w.dmg * dmgMult));
+  const maxP = typeof MAX_PLAYER_PROJS !== 'undefined' ? MAX_PLAYER_PROJS : 160;
+  const life = w.explosive ? 150 : 90;
+  const size = w.explosive ? Math.max(18, w.pr * 4) : Math.max(42, w.pr * 12);
   for (let i = 0; i < pellets; i++) {
     let ang = Math.atan2(ny, nx);
     if (pellets > 1) ang += (i - (pellets - 1) / 2) * (spread / pellets);
     const pdx = Math.cos(ang), pdy = Math.sin(ang);
-    if (playerProjectiles.length >= (typeof MAX_PLAYER_PROJS !== 'undefined' ? MAX_PLAYER_PROJS : 28)) break;
+    if (playerProjectiles.length >= maxP) break;
     playerProjectiles.push({
       x: player.x + pdx * 18, y: player.y + pdy * 18,
-      dx: pdx, dy: pdy, speed: w.speed, r: w.pr, life: 100,
+      dx: pdx, dy: pdy, speed: w.speed, r: w.pr, life,
       dmg: shotDmg, kind: w.explosive ? 'explosive' : 'ranged',
-      color: w.color, pierce: !!w.pierce,
-      splashR: w.splashR, splashDmg: w.splashDmg ? Math.round(w.splashDmg * dmgMult) : w.splashDmg
+      color: w.color, pierce: !!(w.pierce || (typeof relicPierce === 'function' && relicPierce())),
+      splashR: w.splashR, splashDmg: w.splashDmg ? Math.round(w.splashDmg * dmgMult) : w.splashDmg,
+      rotIdx: typeof projRotIndex === 'function' ? projRotIndex(pdx, pdy) : 0,
+      size,
+      r2: (w.pr + 2) * (w.pr + 2)
     });
   }
+
+  if (!isPistol(w) && player.mag < cost) beginReload(true);
 }
 
 function doMeleeAttack(w, nx, ny) {
@@ -977,7 +1650,6 @@ function checkWalls(ent) {
     else if (ent === player && ent.x + r > W) return 'e';
   }
 
-  // Circular room boundary (leave door gaps at cardinal points)
   if (room.shape === 'circle' && !isHallType(room)) {
     const cr = (room.circleR || Math.min(W, H) / 2 - WALL - 8) - r;
     const dx = ent.x - W / 2, dy = ent.y - H / 2;
@@ -1024,7 +1696,6 @@ function checkWalls(ent) {
         if (ent.y - r < b.hTop) ent.y = b.hTop + r;
         if (ent.y + r > b.hBottom) ent.y = b.hBottom - r;
       }
-      // In the crossing: clamp to the plus outer edges only via the two strips
     }
   }
 
@@ -1043,7 +1714,6 @@ function enterDoor(dir) {
   rooms[curKey].visited = true;
   const dest = rooms[curKey];
 
-  // Enter position: center on door; for hallways snap into corridor
   if (dir === 'n') { player.y = H - WALL - player.r - 4; player.x = W / 2; }
   if (dir === 's') { player.y = WALL + player.r + 4; player.x = W / 2; }
   if (dir === 'w') { player.x = W - WALL - player.r - 4; player.y = H / 2; }
@@ -1061,14 +1731,21 @@ function enterDoor(dir) {
   enemyProjectiles = [];
   if (dest.type === 'boss') {
     player.invuln = Math.max(player.invuln, 45);
-    // Start boss spawn countdown (~1 second) the first time you enter
     if (!dest.bossSpawned && (dest.bossSpawnTimer === undefined || dest.bossSpawnTimer < 0)) {
       dest.bossSpawnTimer = BOSS_SPAWN_DELAY;
       flashToast('...');
     }
-  } else if (dest.enemiesActive === false && dest.enemySpawnTimer < 0) {
-    // Give regular room enemies a beat before they wake up
-    dest.enemySpawnTimer = ENEMY_SPAWN_DELAY;
+    if (typeof playStory === 'function') playStory('enter_boss');
+  } else if (dest.type === 'chest' || dest.type === 'armory') {
+    if (typeof playStory === 'function') playStory('open_chest');
+  } else {
+    // First combat room of this depth (rooms that actually have enemies)
+    const hasEnemies = (dest.enemies && dest.enemies.length) || dest.type === 'normal' || dest.type === 'key';
+    if (hasEnemies && typeof playStory === 'function') playStory('enter_combat_room');
+    if (dest.enemiesActive === false && dest.enemySpawnTimer < 0) {
+      // Give regular room enemies a beat before they wake up
+      dest.enemySpawnTimer = ENEMY_SPAWN_DELAY;
+    }
   }
   updateRoomLabel();
 }
@@ -1077,36 +1754,39 @@ function enterDoor(dir) {
 // HELPERS
 // ════════════════════════════════════════
 function grantKillAmmo(en) {
-  const amt = 30;
-  player.ammo += amt;
-  flashToast('+' + amt + ' AMMO');
+  if (isPistol()) return;
+  const amt = (en && en.type === 'boss') ? 15 : 1;
+  player.ammo = (player.ammo | 0) + amt;
+  if (en && en.type === 'boss') flashToast('+' + amt + ' AMMO');
 }
-function spawnParticles(x, y, color, n = 6, kind) {
+function spawnParticles(x, y, color, n = 3, kind) {
   if (typeof particlesEnabled !== 'undefined' && !particlesEnabled) return;
-  const cap = typeof MAX_PARTICLES !== 'undefined' ? MAX_PARTICLES : 40;
+  const cap = typeof MAX_PARTICLES !== 'undefined' ? MAX_PARTICLES : 64;
   let sprite = null;
-  if (kind === 'red' && typeof spriteReady === 'function' && spriteReady('particleRed')) sprite = 'particleRed';
-  else if (kind === 'blue' && typeof spriteReady === 'function' && spriteReady('particleBlue')) sprite = 'particleBlue';
-  for (let i = 0; i < n; i++) {
-    if (particles.length >= cap) break;
-    const spd = 2.5 + Math.random() * 5.5;
+  if (particles.length < cap * 0.5) {
+    if (kind === 'red' && typeof spriteReady === 'function' && spriteReady('particleRed')) sprite = 'particleRed';
+    else if (kind === 'blue' && typeof spriteReady === 'function' && spriteReady('particleBlue')) sprite = 'particleBlue';
+  }
+  const count = Math.min(n, cap - particles.length);
+  for (let i = 0; i < count; i++) {
+    const spd = 2.2 + Math.random() * 4.5;
     const ang = Math.random() * Math.PI * 2;
     particles.push({
       x, y,
       dx: Math.cos(ang) * spd,
       dy: Math.sin(ang) * spd,
-      life: 14 + Math.random() * 16,
-      maxLife: 20,
+      life: 10 + Math.random() * 10,
+      maxLife: 16,
       color: color || '#fff',
       sprite,
-      size: 5 + Math.random() * 7
+      size: 3 + Math.random() * 4
     });
   }
 }
 function explodeBarrel(b) {
   b.alive = false;
-  explosions.push({ x: b.x, y: b.y, life: 22, maxLife: 22, maxR: 140 });
-  spawnParticles(b.x, b.y, '#f4a05a', 36, 'red');
+  explosions.push({ x: b.x, y: b.y, life: 18, maxLife: 18, maxR: 120 });
+  spawnParticles(b.x, b.y, '#f4a05a', 8, 'red');
   if (typeof playSfx === 'function') playSfx('explosion');
   const room = rooms[curKey];
   room.enemies.forEach(en => {
@@ -1125,6 +1805,8 @@ function explodeBarrel(b) {
   }
 }
 function damagePlayer(n) {
+  if (player._god) return;
+
   player.hp -= n;
   player.invuln = 55;
   spawnParticles(player.x, player.y, '#ff8f6b', 8);
@@ -1132,17 +1814,190 @@ function damagePlayer(n) {
   if (player.hp <= 0 && !gameOver) {
     gameOver = true;
     if (typeof playSfx === 'function') playSfx('gameover');
+    const lost = (typeof abandonRunOnDeath === 'function') ? abandonRunOnDeath() : { lostGuns: [], lostRelics: [] };
+    const gunLine = (lost.lostGuns && lost.lostGuns.length)
+      ? lost.lostGuns.map(id => (ARSENAL_MAP[id] && ARSENAL_MAP[id].name) || id).join(', ')
+      : 'none';
+    const relicLine = (lost.lostRelics && lost.lostRelics.length)
+      ? lost.lostRelics.map(id => (typeof RELIC_MAP !== 'undefined' && RELIC_MAP[id] && RELIC_MAP[id].name) || id).join(', ')
+      : 'none';
     const el = document.getElementById('msg');
     el.style.display = 'flex';
-    el.innerHTML = 'YOU DIED<button>RETRY</button><button>MAIN MENU</button>';
+    el.innerHTML =
+      '<div style="text-align:center;max-width:420px">' +
+      '<div style="font-size:22px;letter-spacing:2px;color:#ff6b6b">YOU DIED</div>' +
+      '<div style="font-size:12px;opacity:.9;margin:10px 0 4px;color:#c96b4f">RUN BAG LOST</div>' +
+      '<div style="font-size:11px;color:#aaa;margin:2px 0">Guns lost: ' + gunLine + '</div>' +
+      '<div style="font-size:11px;color:#aaa;margin:2px 0 14px">Relics lost: ' + relicLine + '</div>' +
+      '<button data-act="loadout">NEW RUN</button><button data-act="menu">MAIN MENU</button>' +
+      '</div>';
+    if (typeof flashToast === 'function') flashToast('NOTHING EXTRACTED');
   }
 }
+function spawnBossRelicDrop(room) {
+  if (!room) return;
+  const pool = (typeof RELIC_DEFS !== 'undefined' && RELIC_DEFS.length)
+    ? RELIC_DEFS
+    : [{ id: 'harden' }, { id: 'moonboots' }, { id: 'pockets' }, { id: 'gunoil' },
+       { id: 'magnet' }, { id: 'pierce' }, { id: 'laser' }];
+  const offerId = pool[Math.floor(Math.random() * pool.length)].id;
+  // Drop near center of boss room (slightly offset so not on corpse)
+  const pos = (typeof safeRoomPos === 'function')
+    ? safeRoomPos(room, 18)
+    : { x: W / 2, y: H / 2 + 30 };
+  room.relicItem = {
+    x: pos.x, y: pos.y, r: 18, taken: false, relicId: offerId
+  };
+}
+
+function grantBossRewardToBag() {
+  // Relic is a ground pickup — player must walk onto it
+  const room = rooms[curKey] || (bossKey && rooms[bossKey]);
+  spawnBossRelicDrop(room);
+  player.hp = Math.min(player.maxHp, (player.hp | 0) + 2);
+  flashToast('RELIC DROPPED · PICK IT UP');
+}
+
 function triggerVictory() {
-  gameOver = true;
-  if (typeof awardSkillPoints === 'function') awardSkillPoints(3, 'BOSS');
+  // Unlock exit door — player walks into the hub and stands on a pad. No popup.
+  if (bossDefeatedThisDepth) return;
+  bossDefeatedThisDepth = true;
+  grantBossRewardToBag();
+  if (typeof recordDepthCleared === 'function') recordDepthCleared();
+
+  const room = rooms[curKey];
+  if (room) room.cleared = true;
+  playerProjectiles.length = 0;
+  enemyProjectiles.length = 0;
+
+  // Guarantee hub exists even if gen failed earlier
+  if (!exitHubKey || !rooms[exitHubKey]) {
+    placeExitHubRoom();
+  }
+  if (exitHubKey && rooms[exitHubKey]) {
+    const depth = (typeof currentDepth === 'function') ? currentDepth() : 1;
+    const choiceMode = isChoiceExitDepth(depth);
+    rooms[exitHubKey].choiceMode = choiceMode;
+    rooms[exitHubKey].choiceMade = !choiceMode; // elevators ready unless choice depth
+    rooms[exitHubKey].zones = buildExitHubZones(choiceMode, depth);
+    rooms[exitHubKey].cleared = true;
+  }
+  invalidateRoomCache();
+  updateRoomLabel();
+
+  if (typeof playStory === 'function') playStory('boss_defeated');
+  if (typeof playSfx === 'function') playSfx('pickup');
+  if (typeof flashToast === 'function') {
+    flashToast(exitHubKey ? 'EXIT OPEN · WALK THROUGH' : 'BOSS DOWN');
+  }
+}
+
+/** Confirm only for moral choices (depths 5 / 10 / 15). Elevators are walk-in. */
+function showExitConfirm(zone) {
+  if (exitConfirmPending || gameOver) return;
+  if (zone.kind !== 'choice') return; // elevators never use this panel
+  const depth = (typeof currentDepth === 'function') ? currentDepth() : 1;
+  const opt = getExitChoiceOption(zone.choiceId, depth);
+  const cfg = getExitChoiceConfig(depth);
+  const title = zone.label || 'CHOICE';
+  const detail = (opt && opt.confirm) ? opt.confirm
+    : (cfg && cfg.prompt) ? cfg.prompt
+    : (zone.sub || 'This decision is remembered.');
+
+  exitConfirmPending = { action: 'choice:' + zone.choiceId, label: title, detail: detail, zoneId: zone.id };
   const el = document.getElementById('msg');
   el.style.display = 'flex';
-  el.innerHTML = 'Boss Defeated<button>PLAY AGAIN</button><button>MAIN MENU</button>';
+  el.innerHTML =
+    '<div style="text-align:center;max-width:420px">' +
+    '<div style="font-size:18px;letter-spacing:2px;color:#fff">' + title + '</div>' +
+    '<div style="font-size:12px;opacity:.85;margin:12px 0 16px;line-height:1.5">' + detail + '</div>' +
+    '<button data-act="confirm-exit" style="background:#fff;color:#111">CONFIRM</button>' +
+    '<button data-act="cancel-exit" style="margin-left:8px">CANCEL</button>' +
+    '</div>';
+}
+
+function cancelExitConfirm() {
+  exitConfirmPending = null;
+  const el = document.getElementById('msg');
+  if (el) { el.style.display = 'none'; el.innerHTML = ''; }
+  exitZoneCooldown = 40;
+}
+
+function confirmExitAction() {
+  if (!exitConfirmPending) return;
+  const act = exitConfirmPending.action;
+  exitConfirmPending = null;
+  const el = document.getElementById('msg');
+  if (el) { el.style.display = 'none'; el.innerHTML = ''; }
+
+  if (act.indexOf('choice:') === 0) {
+    const choiceId = act.slice(7);
+    recordRunChoice(choiceId);
+    const room = rooms[curKey];
+    if (room && room.type === 'exithub') room.choiceMade = true;
+    if (typeof flashToast === 'function') flashToast('CHOICE LOCKED');
+    const depth = (typeof currentDepth === 'function') ? currentDepth() : 1;
+    const opt = getExitChoiceOption(choiceId, depth);
+    if (opt && opt.dialogue && opt.dialogue.length) startDialogue(opt.dialogue);
+    exitZoneCooldown = 30;
+  }
+}
+
+function recordRunChoice(choiceId) {
+  if (typeof runBag === 'undefined') return;
+  if (!runBag.choices) runBag.choices = [];
+  const depth = (typeof currentDepth === 'function') ? currentDepth() : 1;
+  runBag.choices.push({ depth: depth, id: choiceId, t: Date.now() });
+}
+
+function doContinueFromExitHub() {
+  const depth = (typeof currentDepth === 'function') ? currentDepth() : 1;
+  if (depth >= FINAL_NORMAL_DEPTH && typeof runBag !== 'undefined') {
+    runBag.secretPath = true;
+  }
+  if (typeof continueMissionDeeper === 'function') continueMissionDeeper();
+  else if (typeof continueDeeper === 'function') {
+    continueDeeper();
+    if (typeof startMission === 'function') startMission({ continueRun: true });
+  }
+}
+
+/** Walk onto pads in the exit hub. Elevators fire immediately; choices ask once. */
+function updateExitHubZones(room) {
+  if (!room || room.type !== 'exithub' || gameOver || exitConfirmPending) return;
+  if (dialogueActive) return;
+  if (exitZoneCooldown > 0) { exitZoneCooldown--; return; }
+  if (!bossDefeatedThisDepth) return;
+
+  const zones = room.zones || [];
+  for (let i = 0; i < zones.length; i++) {
+    const z = zones[i];
+    if (!pointInZone(player.x, player.y, z)) continue;
+
+    if (z.kind === 'elevator') {
+      if (room.choiceMode && !room.choiceMade) {
+        if (typeof flashToast === 'function') flashToast('MAKE A CHOICE FIRST');
+        exitZoneCooldown = 45;
+        return;
+      }
+      // Instant walk-in — no popup
+      exitZoneCooldown = 9999;
+      if (z.id === 'exfil') {
+        if (typeof flashToast === 'function') flashToast('EXFIL');
+        if (typeof extractAndEndRun === 'function') extractAndEndRun();
+      } else if (z.id === 'continue') {
+        if (typeof flashToast === 'function') flashToast('CONTINUING');
+        doContinueFromExitHub();
+      }
+      return;
+    }
+
+    if (z.kind === 'choice') {
+      if (room.choiceMade) continue;
+      showExitConfirm(z);
+      return;
+    }
+  }
 }
 let toastTimer = 0;
 function flashToast(t) {
@@ -1158,24 +2013,185 @@ function updateRoomLabel() {
   const r = rooms[curKey];
   const labels = {
     start: 'START', boss: 'BOSS', key: 'KEY ROOM', chest: 'ARMORY',
-    bosshall: 'BOSS HALL', hallway: 'HALLWAY', normal: 'CORRIDOR'
+    bosshall: 'BOSS HALL', hallway: 'HALLWAY', normal: 'CORRIDOR', relic: 'RELIC VAULT',
+    exithub: (r.choiceMode ? 'DECISION CHAMBER' : 'ELEVATOR BAY')
   };
-  document.getElementById('roomLabel').textContent = labels[r.type] || 'CORRIDOR';
+  const depthTag = (typeof depthLabel === 'function') ? (' · ' + depthLabel()) : '';
+  document.getElementById('roomLabel').textContent = (labels[r.type] || 'CORRIDOR') + depthTag;
   const ks = document.getElementById('keyStatus');
   if (player.hasBossKey) ks.classList.add('have'); else ks.classList.remove('have');
+}
+
+// ════════════════════════════════════════
+// DIALOGUE / STORY
+// ════════════════════════════════════════
+// Usage:
+//   startDialogue([
+//     { speaker: 'COMMAND', text: 'Drop in 30 seconds.' },
+//     { speaker: 'YOU', text: 'Copy.' }
+//   ]);
+// Or play a named story once:
+//   playStory('mission_start');
+//
+let dialogueActive = false;
+let dialogueQueue = [];
+let dialogueTyping = false;
+let dialogueCharIndex = 0;
+let dialogueFullText = '';
+let dialogueTypeTimer = 0;
+const DIALOGUE_TYPE_SPEED = 2; // frames per character (higher = slower)
+const storiesPlayed = new Set();
+
+/**
+ * Story content lives in story-data.js (STORY_DATA).
+ *   STORY_DATA.levels[depth][trigger] = lines  — exact depth only, no cascade
+ * No default fallback: if you didn't write it for that level, nothing plays.
+ */
+function resolveStoryLines(trigger, depth) {
+  const data = (typeof STORY_DATA !== 'undefined') ? STORY_DATA : null;
+  if (!data || !data.levels) return null;
+  const d = depth != null ? depth
+    : (typeof currentDepth === 'function' ? currentDepth()
+      : (typeof runBag !== 'undefined' && runBag.depth) || 1);
+  const block = data.levels[d] || data.levels[String(d)];
+  if (!block) return null;
+  const lines = block[trigger];
+  return (Array.isArray(lines) && lines.length) ? lines : null;
+}
+
+/** Random short dialogue when looting a weapon or relic. */
+function playPickupDialogue(kind, itemName) {
+  const data = (typeof STORY_DATA !== 'undefined') ? STORY_DATA : null;
+  if (!data) return false;
+  const pool = kind === 'relic' ? data.pickupRelic : data.pickupWeapon;
+  if (!pool || !pool.length) return false;
+  const entry = pool[Math.floor(Math.random() * pool.length)];
+  if (!entry || !entry.length) return false;
+  const name = itemName || 'ITEM';
+  const lines = entry.map(function (line) {
+    return {
+      speaker: line.speaker || '',
+      text: String(line.text || '').split('{name}').join(name)
+    };
+  });
+  startDialogue(lines);
+  return true;
+}
+
+function startDialogue(lines) {
+  if (!lines || !lines.length) return;
+  if (dialogueActive) {
+    // Append if already talking
+    dialogueQueue = dialogueQueue.concat(lines);
+    return;
+  }
+  dialogueQueue = lines.slice();
+  dialogueActive = true;
+  // Close pause menu if it was open so dialogue owns the screen
+  const pauseEl = document.getElementById('pauseScreen');
+  if (pauseEl) pauseEl.classList.remove('show');
+  paused = false;
+  showNextDialogueLine();
+}
+
+/**
+ * Play a named story for the current depth.
+ * Once-per-run by default (key includes depth so depth 1 and depth 5 each play once).
+ * playStory('mission_start', true) forces replay.
+ */
+function playStory(id, force) {
+  const depth = (typeof currentDepth === 'function') ? currentDepth()
+    : (typeof runBag !== 'undefined' && runBag.depth) || 1;
+  const playKey = id + '@' + depth;
+  if (!force && storiesPlayed.has(playKey)) return false;
+  const lines = resolveStoryLines(id, depth);
+  if (!lines || !lines.length) return false;
+  storiesPlayed.add(playKey);
+  startDialogue(lines);
+  return true;
+}
+
+function showNextDialogueLine() {
+  const box = document.getElementById('dialogueBox');
+  const speakerEl = document.getElementById('dialogueSpeaker');
+  const textEl = document.getElementById('dialogueText');
+  if (!box || !speakerEl || !textEl) {
+    dialogueActive = false;
+    return;
+  }
+
+  if (dialogueQueue.length === 0) {
+    box.classList.remove('show');
+    dialogueActive = false;
+    dialogueTyping = false;
+    dialogueFullText = '';
+    return;
+  }
+
+  const line = dialogueQueue.shift();
+  speakerEl.textContent = line.speaker || '';
+  dialogueFullText = line.text || '';
+  dialogueCharIndex = 0;
+  dialogueTyping = true;
+  dialogueTypeTimer = 0;
+  textEl.textContent = '';
+  box.classList.add('show');
+}
+
+function advanceDialogue() {
+  if (!dialogueActive) return;
+  const textEl = document.getElementById('dialogueText');
+  if (dialogueTyping) {
+    // Instantly finish current line
+    dialogueTyping = false;
+    if (textEl) textEl.textContent = dialogueFullText;
+    return;
+  }
+  showNextDialogueLine();
+}
+
+function skipDialogue() {
+  if (!dialogueActive) return;
+  dialogueQueue = [];
+  dialogueTyping = false;
+  showNextDialogueLine(); // empties and hides
+}
+
+function updateDialogue() {
+  if (!dialogueActive || !dialogueTyping) return;
+  dialogueTypeTimer++;
+  if (dialogueTypeTimer < DIALOGUE_TYPE_SPEED) return;
+  dialogueTypeTimer = 0;
+  dialogueCharIndex++;
+  const textEl = document.getElementById('dialogueText');
+  if (textEl) textEl.textContent = dialogueFullText.slice(0, dialogueCharIndex);
+  if (dialogueCharIndex >= dialogueFullText.length) {
+    dialogueTyping = false;
+  }
 }
 
 // ════════════════════════════════════════
 // UPDATE
 // ════════════════════════════════════════
 function update() {
-  if (gameOver || !started || paused) return;
+  updateDialogue();
+  if (gameOver || !started || paused || dialogueActive) return;
   const room = rooms[curKey];
+  if (!room) return;
+  if (!room.enemies) room.enemies = [];
+  if (!room.barrels) room.barrels = [];
+  if (!room.doors) room.doors = {};
 
   // --- delayed boss spawn ---
   if (room.type === 'boss' && !room.bossSpawned && room.bossSpawnTimer >= 0) {
     room.bossSpawnTimer--;
     if (room.bossSpawnTimer <= 0) spawnBoss(room);
+  }
+
+  // --- delayed regular-room enemy wake-up ---
+  if (room.enemySpawnTimer >= 0) {
+    room.enemySpawnTimer--;
+    if (room.enemySpawnTimer <= 0) room.enemiesActive = true;
   }
 
   // --- movement ---
@@ -1197,6 +2213,22 @@ function update() {
   const door = checkWalls(player);
   if (door) enterDoor(door);
 
+  // Auto-reload progress
+  // ammo safety — never start a frame with empty pistol mag
+  if (started && !gameOver) {
+    const _w = currentWeapon();
+    if (isPistol(_w) && (player.mag | 0) <= 0) {
+      const size = (typeof effectiveMagSize === 'function') ? effectiveMagSize(_w) : 12;
+      player.mag = size;
+    }
+  }
+  if (player.reloadTimer > 0) {
+    player.reloadTimer--;
+    if (player.reloadTimer <= 0) {
+      fillMagFromReserve(currentWeapon());
+      flashToast('RELOADED');
+    }
+  }
   if (mouse.down && currentWeapon().auto) tryFire();
 
   if (player.shootCooldown > 0) player.shootCooldown--;
@@ -1205,167 +2237,485 @@ function update() {
   if (gunAnimTimer > 0) { gunAnimTimer--; if (gunAnimTimer === 0) gunFrame = 0; }
   if (toastTimer > 0) { toastTimer--; if (toastTimer === 0) document.getElementById('toast').classList.remove('show'); }
   if (meleeSwing) { meleeSwing.life--; if (meleeSwing.life <= 0) meleeSwing = null; }
+  if (room.type === 'exithub') updateExitHubZones(room);
 
   // --- hazard tiles ---
   // Every hazard tile is an impassable 'blocking' hole (see
-  // resolveHazardBlockCollision) — none of them ever damage the player.
 
   // --- projectiles ---
-  // Returns true to keep the projectile alive, false to remove it.
-  // Entity hits run BEFORE wall kills so targets near/inside wall buffers remain shootable.
-  const stepPlayerProjectile = p => {
-    p.x += p.dx * p.speed; p.y += p.dy * p.speed; p.life--;
-    if (p.life <= 0) return false;
-    // enemies first
-    for (const en of room.enemies) {
-      if (!en.alive) continue;
-      if (Math.hypot(p.x - en.x, p.y - en.y) < p.r + en.r) {
-        en.hp -= p.dmg;
-        spawnParticles(en.x, en.y, p.color);
-        if (en.hp <= 0) {
-          en.alive = false;
-          spawnParticles(en.x, en.y, '#8fe0c9', 18);
-          grantKillAmmo(en);
-          if (en.type === 'boss') triggerVictory();
-        }
-        if (p.kind === 'explosive') {
-          explosions.push({ x: p.x, y: p.y, life: 16, maxLife: 16, maxR: p.splashR || 70 });
-          room.enemies.forEach(e2 => {
-            if (!e2.alive) return;
-            if (Math.hypot(e2.x - p.x, e2.y - p.y) < (p.splashR || 70) + e2.r) {
-              e2.hp -= p.splashDmg || 3;
-              if (e2.hp <= 0) { e2.alive = false; grantKillAmmo(e2); if (e2.type === 'boss') triggerVictory(); }
-            }
-          });
-        }
-        return !!p.pierce;
-      }
-    }
-    // barrels
-    for (const b of room.barrels) {
-      if (!b.alive) continue;
-      if (Math.hypot(p.x - b.x, p.y - b.y) < p.r + b.r) {
-        explodeBarrel(b);
-        return false;
-      }
-    }
-    // walls (including skinny hallway corridor sides) — after entity hits
-    if (p.x < WALL || p.x > W - WALL || p.y < WALL || p.y > H - WALL) return false;
-    if (isHallType(room) && !inHallCorridor(p.x, p.y, room)) return false;
-    if (room.shape === 'circle') {
-      const cr = room.circleR || Math.min(W, H) / 2 - WALL - 8;
-      if (Math.hypot(p.x - W / 2, p.y - H / 2) > cr) return false;
-    }
-    if ((room.columns || []).some(col => circleHitsColumn(p.x, p.y, p.r, col))) return false;
-    return true;
-  };
+  const enemies = room.enemies || [];
+  const barrels = room.barrels || [];
+  const cols = room.columns || [];
+  const hasCols = cols.length > 0;
+  const isHall = isHallType(room);
+  const isCircle = room.shape === 'circle';
+  const circleR = isCircle ? (room.circleR || Math.min(W, H) / 2 - WALL - 8) : 0;
+  const circleR2 = circleR * circleR;
+
   for (let i = playerProjectiles.length - 1; i >= 0; i--) {
-    if (!stepPlayerProjectile(playerProjectiles[i])) playerProjectiles.splice(i, 1);
+    const p = playerProjectiles[i];
+    if (!p || p.x == null) {
+      playerProjectiles.splice(i, 1);
+      continue;
+    }
+    p.x += p.dx * p.speed;
+    p.y += p.dy * p.speed;
+    p.life--;
+    let dead = p.life <= 0;
+
+    if (!dead) {
+      // enemies first
+      for (let ei = 0; ei < enemies.length; ei++) {
+        const en = enemies[ei];
+        if (!en || !en.alive) continue;
+        const edx = p.x - en.x, edy = p.y - en.y;
+        const hitR = p.r + en.r;
+        if (edx * edx + edy * edy < hitR * hitR) {
+          en.hp -= p.dmg;
+          // 1 spark on hit — death still gets a fuller burst
+          spawnParticles(en.x, en.y, p.color, 1);
+          if (en.hp <= 0) {
+            en.alive = false;
+            spawnParticles(en.x, en.y, '#8fe0c9', 10);
+            grantKillAmmo(en);
+            if (en.type === 'boss') triggerVictory();
+          }
+          if (p.kind === 'explosive') {
+            explosions.push({ x: p.x, y: p.y, life: 16, maxLife: 16, maxR: p.splashR || 70 });
+            const sr = (p.splashR || 70);
+            const sr2 = sr * sr;
+            for (let e2i = 0; e2i < enemies.length; e2i++) {
+              const e2 = enemies[e2i];
+              if (!e2.alive) continue;
+              const sdx = e2.x - p.x, sdy = e2.y - p.y;
+              if (sdx * sdx + sdy * sdy < (sr + e2.r) * (sr + e2.r)) {
+                e2.hp -= p.splashDmg || 3;
+                if (e2.hp <= 0) {
+                  e2.alive = false;
+                  grantKillAmmo(e2);
+                  if (e2.type === 'boss') triggerVictory();
+                }
+              }
+            }
+          }
+          if (!p.pierce) dead = true;
+          break;
+        }
+      }
+    }
+
+    if (!dead) {
+      for (let bi = 0; bi < barrels.length; bi++) {
+        const b = barrels[bi];
+        if (!b.alive) continue;
+        const bdx = p.x - b.x, bdy = p.y - b.y;
+        const br = p.r + b.r;
+        if (bdx * bdx + bdy * bdy < br * br) {
+          explodeBarrel(b);
+          dead = true;
+          break;
+        }
+      }
+    }
+
+    if (!dead) {
+      if (p.x < WALL || p.x > W - WALL || p.y < WALL || p.y > H - WALL) dead = true;
+      else if (isHall && !inHallCorridor(p.x, p.y, room)) dead = true;
+      else if (isCircle) {
+        const cdx = p.x - W / 2, cdy = p.y - H / 2;
+        if (cdx * cdx + cdy * cdy > circleR2) dead = true;
+      }
+      if (!dead && hasCols) {
+        for (let ci = 0; ci < cols.length; ci++) {
+          if (circleHitsColumn(p.x, p.y, p.r, cols[ci])) { dead = true; break; }
+        }
+      }
+    }
+
+    if (dead) {
+      const last = playerProjectiles.length - 1;
+      if (i !== last) playerProjectiles[i] = playerProjectiles[last];
+      playerProjectiles.pop();
+    }
   }
 
   // --- enemy AI ---
-  // Enemies steer around kill tiles but are not damaged by them.
-  const pointOnHazard = (x, y, r) => {
-    for (const h of (room.hazards || [])) {
-      if (x + r > h.x && x - r < h.x + h.w && y + r > h.y && y - r < h.y + h.h) return true;
-    }
-    return false;
-  };
   const moveEnemyAvoidHazards = (en, mx, my) => {
     const nx = en.x + mx, ny = en.y + my;
-    if (!pointOnHazard(nx, ny, en.r)) {
+    if (!pointOnHazard(room, nx, ny, en.r)) {
       en.x = nx; en.y = ny;
-    } else if (!pointOnHazard(nx, en.y, en.r)) {
+    } else if (!pointOnHazard(room, nx, en.y, en.r)) {
       en.x = nx;
-    } else if (!pointOnHazard(en.x, ny, en.r)) {
+    } else if (!pointOnHazard(room, en.x, ny, en.r)) {
       en.y = ny;
     } else {
       // Slide perpendicular to try to get around the hazard
       const len = Math.hypot(mx, my) || 1;
       const px = -my / len * en.speed, py = mx / len * en.speed;
-      if (!pointOnHazard(en.x + px, en.y + py, en.r)) {
+      if (!pointOnHazard(room, en.x + px, en.y + py, en.r)) {
         en.x += px; en.y += py;
-      } else if (!pointOnHazard(en.x - px, en.y - py, en.r)) {
+      } else if (!pointOnHazard(room, en.x - px, en.y - py, en.r)) {
         en.x -= px; en.y -= py;
       }
     }
-    // If somehow stuck on a hazard (spawn overlap), gently push toward room center
-    if (pointOnHazard(en.x, en.y, en.r)) {
+    if (pointOnHazard(room, en.x, en.y, en.r)) {
       const cx = W / 2 - en.x, cy = H / 2 - en.y;
       const cl = Math.hypot(cx, cy) || 1;
       const sx = en.x + (cx / cl) * en.speed;
       const sy = en.y + (cy / cl) * en.speed;
-      if (!pointOnHazard(sx, sy, en.r)) { en.x = sx; en.y = sy; }
+      if (!pointOnHazard(room, sx, sy, en.r)) { en.x = sx; en.y = sy; }
     }
   };
 
-  room.enemies.forEach(en => {
+  const enemiesAwake = room.enemiesActive !== false;
+  (room.enemies || []).forEach(en => {
+    if (!en) return;
     if (!en.alive) return;
     const dx = player.x - en.x, dy = player.y - en.y;
     const dist = Math.hypot(dx, dy) || 1;
-    if (en.type === 'slime' || (en.type === 'boss' && en.mode === 'chase')) {
+    if (!enemiesAwake) {
+      if (dist < en.r + player.r && player.invuln <= 0) damagePlayer(1);
+      return;
+    }
+    if (en.type === 'slime') {
       moveEnemyAvoidHazards(en, (dx / dist) * en.speed, (dy / dist) * en.speed);
       checkWalls(en);
     }
-    if (en.type === 'shooter' || en.type === 'boss') {
+    if (en.type === 'shooter') {
       en.cooldown = (en.cooldown || 0) - 1;
-      if (en.cooldown <= 0 && dist < 320) {
-        en.cooldown = en.type === 'boss' ? 40 : 55;
+      if (en.cooldown <= 0 && dist < 320 && enemyProjectiles.length < (typeof MAX_ENEMY_PROJS !== 'undefined' ? MAX_ENEMY_PROJS : 48)) {
+        en.cooldown = 55;
+        const edx = dx / dist, edy = dy / dist;
         enemyProjectiles.push({
-          x: en.x, y: en.y, dx: dx / dist, dy: dy / dist,
-          speed: en.type === 'boss' ? 4.5 : 3.5, r: 5, life: 90
+          x: en.x, y: en.y, dx: edx, dy: edy,
+          speed: 3.5, r: 5, life: 90,
+          rotIdx: typeof projRotIndex === 'function' ? projRotIndex(edx, edy) : 0,
+          size: Math.max(33, 5 * 9)
         });
         if (typeof playSfx === 'function') playSfx('enemyShot');
       }
     }
     if (en.type === 'boss') {
       en.modeTimer = (en.modeTimer || 0) - 1;
-      if (en.modeTimer <= 0) {
-        en.mode = en.mode === 'chase' ? 'shoot' : 'chase';
-        en.modeTimer = 120 + Math.random() * 80;
+      en.shootTimer = (en.shootTimer || 0) - 1;
+      en.burstTimer = (en.burstTimer || 0) - 1;
+      en.dashTimer = (en.dashTimer || 0) - 1;
+      en.spawnTimer = (en.spawnTimer || 0) - 1;
+      if (!en.enraged && en.hp < en.maxHp * 0.4) {
+        en.enraged = true;
+        en.phase = 2;
+        flashToast('BOSS ENRAGED');
       }
-      if (en.hp < en.maxHp * 0.4) en.enraged = true;
-      if (en.enraged) en.speed = 1.55;
+      const bt = en.bossType || 1;
+      const spd = en.enraged ? en.speed * 1.35 : en.speed;
+      const maxP = (typeof MAX_ENEMY_PROJS !== 'undefined' ? MAX_ENEMY_PROJS : 48);
+
+      function bossShoot(n, spread, speed, life) {
+        if (enemyProjectiles.length >= maxP) return;
+        const shots = n || 1;
+        const edx = dx / dist, edy = dy / dist;
+        for (let s = 0; s < shots; s++) {
+          const spr = (s - (shots - 1) / 2) * (spread || 0.18);
+          const c = Math.cos(spr), sn = Math.sin(spr);
+          const px = edx * c - edy * sn, py = edx * sn + edy * c;
+          enemyProjectiles.push({
+            x: en.x, y: en.y, dx: px, dy: py,
+            speed: speed || (en.enraged ? 5.2 : 4.6), r: 5, life: life || 100,
+            rotIdx: typeof projRotIndex === 'function' ? projRotIndex(px, py) : 0,
+            size: Math.max(33, 5 * 9)
+          });
+        }
+        if (typeof playSfx === 'function') playSfx('enemyShot');
+      }
+
+      function spawnMinion(kind) {
+        const ang = Math.random() * Math.PI * 2;
+        const mx = en.x + Math.cos(ang) * 50;
+        const my = en.y + Math.sin(ang) * 50;
+        const isShooter = kind === 'shooter';
+        room.enemies.push({
+          x: mx, y: my,
+          hp: isShooter ? 3 : 2, maxHp: isShooter ? 3 : 2,
+          r: isShooter ? 14 : 16,
+          speed: isShooter ? 0.55 : 1.4,
+          type: isShooter ? 'shooter' : 'slime',
+          alive: true, cooldown: 20, shootTimer: 40
+        });
+      }
+
+      // --- type behaviors ---
+      if (bt === 2) {
+        // Sitting nest: stationary, spawns moontins, shoots
+        if (en.spawnTimer <= 0) {
+          const aliveMin = room.enemies.filter(e => e && e.alive && e.type !== 'boss').length;
+          if (aliveMin < (en.enraged ? 6 : 4)) {
+            spawnMinion(Math.random() < 0.35 ? 'shooter' : 'slime');
+            spawnMinion('slime');
+          }
+          en.spawnTimer = en.enraged ? 70 : 110;
+        }
+        if (en.shootTimer <= 0 && dist < 400) {
+          bossShoot(en.enraged ? 5 : 3, 0.22, 4.0, 110);
+          en.shootTimer = en.enraged ? 32 : 48;
+        }
+      } else if (bt === 3) {
+        // Pack leader: chase + spawn
+        if (en.modeTimer <= 0) {
+          en.mode = en.mode === 'chase' ? 'flank' : 'chase';
+          en.modeTimer = 60 + Math.random() * 40;
+        }
+        let mx = (dx / dist) * spd, my = (dy / dist) * spd;
+        if (en.mode === 'flank') {
+          const ox = -dy / dist * en.flankSide, oy = dx / dist * en.flankSide;
+          const tx = player.x + ox * 100, ty = player.y + oy * 100;
+          const fdx = tx - en.x, fdy = ty - en.y, fd = Math.hypot(fdx, fdy) || 1;
+          mx = (fdx / fd) * spd; my = (fdy / fd) * spd;
+        }
+        moveEnemyAvoidHazards(en, mx, my); checkWalls(en);
+        if (en.spawnTimer <= 0) {
+          const aliveMin = room.enemies.filter(e => e && e.alive && e.type !== 'boss').length;
+          if (aliveMin < 3) spawnMinion('slime');
+          en.spawnTimer = en.enraged ? 80 : 130;
+        }
+        if (en.shootTimer <= 0 && dist < 320) {
+          bossShoot(1, 0, 4.8, 90);
+          en.shootTimer = 36;
+        }
+      } else if (bt === 4) {
+        // Blinker: dash/teleport twist
+        if (en.dashTimer <= 0) {
+          const ang = Math.atan2(dy, dx) + (Math.random() - 0.5) * 1.2;
+          en.x = Math.max(WALL + 40, Math.min(W - WALL - 40, player.x + Math.cos(ang) * 140));
+          en.y = Math.max(WALL + 40, Math.min(H - WALL - 40, player.y + Math.sin(ang) * 140));
+          resolveColumnCollision(en);
+          spawnParticles(en.x, en.y, '#9fd8ff', 12);
+          bossShoot(3, 0.25, 5.0, 80);
+          en.dashTimer = en.enraged ? 55 : 85;
+        } else {
+          const mx = (dx / dist) * spd * 0.6, my = (dy / dist) * spd * 0.6;
+          moveEnemyAvoidHazards(en, mx, my); checkWalls(en);
+        }
+        if (en.shootTimer <= 0 && dist < 300) {
+          bossShoot(1, 0, 5.5, 70);
+          en.shootTimer = 28;
+        }
+      } else if (bt === 5) {
+        // Orbiter: circle player, radial shots
+        en.orbitAng = (en.orbitAng || 0) + (en.enraged ? 0.045 : 0.03);
+        const rad = 130;
+        const tx = player.x + Math.cos(en.orbitAng) * rad;
+        const ty = player.y + Math.sin(en.orbitAng) * rad;
+        const fdx = tx - en.x, fdy = ty - en.y, fd = Math.hypot(fdx, fdy) || 1;
+        moveEnemyAvoidHazards(en, (fdx / fd) * spd * 1.2, (fdy / fd) * spd * 1.2);
+        checkWalls(en);
+        if (en.shootTimer <= 0) {
+          for (let a = 0; a < 8; a++) {
+            if (enemyProjectiles.length >= maxP) break;
+            const ang = a * Math.PI / 4 + en.orbitAng;
+            const px = Math.cos(ang), py = Math.sin(ang);
+            enemyProjectiles.push({
+              x: en.x, y: en.y, dx: px, dy: py, speed: 3.6, r: 5, life: 90,
+              rotIdx: typeof projRotIndex === 'function' ? projRotIndex(px, py) : 0,
+              size: Math.max(33, 5 * 9)
+            });
+          }
+          if (typeof playSfx === 'function') playSfx('enemyShot');
+          en.shootTimer = en.enraged ? 40 : 60;
+        }
+      } else if (bt === 6) {
+        // Tank: slow, heavy HP, big volleys
+        const mx = (dx / dist) * spd, my = (dy / dist) * spd;
+        moveEnemyAvoidHazards(en, mx, my); checkWalls(en);
+        if (en.shootTimer <= 0 && dist < 380) {
+          bossShoot(en.enraged ? 7 : 5, 0.14, 3.8, 120);
+          en.shootTimer = en.enraged ? 45 : 60;
+        }
+        if (en.burstTimer <= 0 && dist < 300) {
+          for (let a = -3; a <= 3; a++) {
+            if (enemyProjectiles.length >= maxP) break;
+            const ang = Math.atan2(dy, dx) + a * 0.18;
+            const px = Math.cos(ang), py = Math.sin(ang);
+            enemyProjectiles.push({
+              x: en.x, y: en.y, dx: px, dy: py, speed: 3.2, r: 6, life: 110,
+              rotIdx: typeof projRotIndex === 'function' ? projRotIndex(px, py) : 0,
+              size: Math.max(36, 6 * 9)
+            });
+          }
+          en.burstTimer = 130;
+          if (typeof playSfx === 'function') playSfx('enemyShot');
+        }
+      } else if (bt === 7) {
+        // Striker: fast glass cannon
+        if (en.modeTimer <= 0) {
+          en.mode = en.mode === 'chase' ? 'dash' : 'chase';
+          en.modeTimer = 40 + Math.random() * 30;
+        }
+        let mx = (dx / dist) * spd, my = (dy / dist) * spd;
+        if (en.mode === 'dash' && dist > 60) { mx *= 2.4; my *= 2.4; }
+        moveEnemyAvoidHazards(en, mx, my); checkWalls(en);
+        if (en.shootTimer <= 0 && dist < 280) {
+          bossShoot(2, 0.12, 6.0, 70);
+          en.shootTimer = 22;
+        }
+      } else if (bt === 8) {
+        // Overseer: spawn + flank
+        if (en.modeTimer <= 0) {
+          en.flankSide = Math.random() < 0.5 ? 1 : -1;
+          en.modeTimer = 50;
+        }
+        const ox = -dy / dist * en.flankSide, oy = dx / dist * en.flankSide;
+        const tx = player.x + ox * 120, ty = player.y + oy * 120;
+        const fdx = tx - en.x, fdy = ty - en.y, fd = Math.hypot(fdx, fdy) || 1;
+        moveEnemyAvoidHazards(en, (fdx / fd) * spd, (fdy / fd) * spd);
+        checkWalls(en);
+        if (en.spawnTimer <= 0) {
+          const aliveMin = room.enemies.filter(e => e && e.alive && e.type !== 'boss').length;
+          if (aliveMin < 5) {
+            spawnMinion('shooter');
+            spawnMinion('slime');
+          }
+          en.spawnTimer = en.enraged ? 75 : 110;
+        }
+        if (en.shootTimer <= 0 && dist < 340) {
+          bossShoot(3, 0.2, 4.5, 95);
+          en.shootTimer = 34;
+        }
+      } else if (bt === 9) {
+        // Apex: multi-phase everything
+        if (en.modeTimer <= 0) {
+          const modes = ['chase', 'flank', 'shoot', 'blink'];
+          en.mode = modes[Math.floor(Math.random() * modes.length)];
+          en.modeTimer = en.enraged ? 35 : 55;
+          if (en.mode === 'flank') en.flankSide = Math.random() < 0.5 ? 1 : -1;
+        }
+        if (en.mode === 'blink' && en.dashTimer <= 0) {
+          const ang = Math.random() * Math.PI * 2;
+          en.x = Math.max(WALL + 40, Math.min(W - WALL - 40, player.x + Math.cos(ang) * 160));
+          en.y = Math.max(WALL + 40, Math.min(H - WALL - 40, player.y + Math.sin(ang) * 160));
+          resolveColumnCollision(en);
+          bossShoot(5, 0.28, 5.2, 85);
+          en.dashTimer = 70;
+        } else {
+          let mx = (dx / dist) * spd, my = (dy / dist) * spd;
+          if (en.mode === 'flank') {
+            const ox = -dy / dist * en.flankSide, oy = dx / dist * en.flankSide;
+            const tx = player.x + ox * 110, ty = player.y + oy * 110;
+            const fdx = tx - en.x, fdy = ty - en.y, fd = Math.hypot(fdx, fdy) || 1;
+            mx = (fdx / fd) * spd; my = (fdy / fd) * spd;
+          }
+          if (en.dashTimer <= 0 && dist > 90 && dist < 260) {
+            mx *= 2.6; my *= 2.6; en.dashTimer = 100;
+          }
+          moveEnemyAvoidHazards(en, mx, my); checkWalls(en);
+        }
+        if (en.spawnTimer <= 0) {
+          const aliveMin = room.enemies.filter(e => e && e.alive && e.type !== 'boss').length;
+          if (aliveMin < 4) spawnMinion(Math.random() < 0.5 ? 'shooter' : 'slime');
+          en.spawnTimer = 90;
+        }
+        if (en.shootTimer <= 0 && dist < 360) {
+          bossShoot(en.mode === 'shoot' || en.enraged ? 4 : 2, 0.16, 5.0, 100);
+          en.shootTimer = en.enraged ? 24 : 34;
+        }
+      } else {
+        // Type 1 default mover: chase / flank / shoot
+        if (en.modeTimer <= 0) {
+          if (en.mode === 'chase') en.mode = 'flank';
+          else if (en.mode === 'flank') en.mode = 'shoot';
+          else en.mode = 'chase';
+          en.modeTimer = en.enraged ? (50 + Math.random() * 40) : (70 + Math.random() * 50);
+          if (en.mode === 'flank') en.flankSide = Math.random() < 0.5 ? 1 : -1;
+        }
+        if (en.mode === 'chase' || en.mode === 'flank') {
+          let mx, my;
+          if (en.mode === 'flank') {
+            const ox = -dy / dist * en.flankSide, oy = dx / dist * en.flankSide;
+            const tx = player.x + ox * 110, ty = player.y + oy * 110;
+            const fdx = tx - en.x, fdy = ty - en.y, fd = Math.hypot(fdx, fdy) || 1;
+            mx = (fdx / fd) * spd; my = (fdy / fd) * spd;
+          } else {
+            mx = (dx / dist) * spd; my = (dy / dist) * spd;
+          }
+          if (en.dashTimer <= 0 && dist > 80 && dist < 280) {
+            mx *= 2.8; my *= 2.8; en.dashTimer = en.enraged ? 90 : 140;
+          }
+          moveEnemyAvoidHazards(en, mx, my); checkWalls(en);
+        }
+        if (en.shootTimer <= 0 && dist < 360 && enemyProjectiles.length < maxP) {
+          bossShoot((en.mode === 'shoot' || en.enraged) ? 3 : 1, 0.18, en.enraged ? 5.2 : 4.6, 100);
+          en.shootTimer = en.enraged ? 28 : 38;
+        }
+        if (en.burstTimer <= 0 && dist < 300 && enemyProjectiles.length < maxP - 4) {
+          for (let a = -2; a <= 2; a++) {
+            const ang = Math.atan2(dy, dx) + a * 0.22;
+            const px = Math.cos(ang), py = Math.sin(ang);
+            enemyProjectiles.push({
+              x: en.x, y: en.y, dx: px, dy: py, speed: 4.2, r: 5, life: 95,
+              rotIdx: typeof projRotIndex === 'function' ? projRotIndex(px, py) : 0,
+              size: Math.max(33, 5 * 9)
+            });
+          }
+          en.burstTimer = en.enraged ? 100 : 150;
+          if (typeof playSfx === 'function') playSfx('enemyShot');
+        }
+      }
     }
     if (dist < en.r + player.r && player.invuln <= 0) damagePlayer(1);
   });
 
-  // Don't mark boss room clear until the boss has actually spawned and been killed
   const bossPending = room.type === 'boss' && !room.bossSpawned;
-  if (!room.cleared && !bossPending && room.enemies.length > 0 && room.enemies.every(e => !e.alive)) {
+  if (!room.cleared && !bossPending && enemies.length > 0 && enemies.every(e => e && !e.alive)) {
     room.cleared = true;
     flashToast('ROOM CLEAR');
   }
 
   // --- enemy projectiles ---
-  const stepEnemyProjectile = p => {
-    p.x += p.dx * p.speed; p.y += p.dy * p.speed; p.life--;
-    if (p.life <= 0 || p.x < 0 || p.x > W || p.y < 0 || p.y > H) return false;
-    if (isHallType(room) && !inHallCorridor(p.x, p.y, room)) return false;
-    if ((room.columns || []).some(col => circleHitsColumn(p.x, p.y, p.r, col))) return false;
-    if (Math.hypot(p.x - player.x, p.y - player.y) < p.r + player.r && player.invuln <= 0) {
-      damagePlayer(1);
-      return false;
-    }
-    return true;
-  };
+  const playerHitR = player.r;
+  const playerHitR2 = (5 + playerHitR) * (5 + playerHitR); // enemy proj r is 5
   for (let i = enemyProjectiles.length - 1; i >= 0; i--) {
-    if (!stepEnemyProjectile(enemyProjectiles[i])) enemyProjectiles.splice(i, 1);
+    const p = enemyProjectiles[i];
+    if (!p || p.x == null) {
+      enemyProjectiles.splice(i, 1);
+      continue;
+    }
+    p.x += p.dx * p.speed;
+    p.y += p.dy * p.speed;
+    p.life--;
+    let dead = p.life <= 0 || p.x < 0 || p.x > W || p.y < 0 || p.y > H;
+    if (!dead && isHall && !inHallCorridor(p.x, p.y, room)) dead = true;
+    if (!dead && hasCols) {
+      for (let ci = 0; ci < cols.length; ci++) {
+        if (circleHitsColumn(p.x, p.y, p.r, cols[ci])) { dead = true; break; }
+      }
+    }
+    if (!dead && player.invuln <= 0) {
+      const pdx = p.x - player.x, pdy = p.y - player.y;
+      const pr = p.r + playerHitR;
+      if (pdx * pdx + pdy * pdy < pr * pr) {
+        damagePlayer(1);
+        dead = true;
+      }
+    }
+    if (dead) {
+      const last = enemyProjectiles.length - 1;
+      if (i !== last) enemyProjectiles[i] = enemyProjectiles[last];
+      enemyProjectiles.pop();
+    }
   }
 
   // --- pickups ---
+  const pickRMult = (typeof relicPickupRadiusMult === 'function') ? relicPickupRadiusMult() : 1;
   (room.pickups || []).forEach(pk => {
     if (pk.taken) return;
-    if (Math.hypot(player.x - pk.x, player.y - pk.y) < player.r + pk.r) {
+    if (Math.hypot(player.x - pk.x, player.y - pk.y) < (player.r + pk.r) * pickRMult) {
       pk.taken = true;
       if (typeof playSfx === 'function') playSfx('pickup');
       if (pk.kind === 'health') {
         player.hp = Math.min(player.maxHp, player.hp + HEALTH_PICKUP_HEAL);
         flashToast('+' + HEALTH_PICKUP_HEAL + ' HP');
       } else {
-        const amt = AMMO_PICKUP_AMOUNT;
-        player.ammo += amt;
-        flashToast('+' + amt + ' AMMO');
+        const gained = grantAmmoPickup();
+        flashToast(gained > 0 ? ('+' + gained + ' AMMO') : 'AMMO FULL');
       }
     }
   });
@@ -1373,11 +2723,12 @@ function update() {
   // --- key ---
   if (room.keyItem && !room.keyItem.taken) {
     const k = room.keyItem;
-    if (Math.hypot(player.x - k.x, player.y - k.y) < player.r + k.r) {
+    if (Math.hypot(player.x - k.x, player.y - k.y) < (player.r + k.r) * pickRMult) {
       k.taken = true;
       player.hasBossKey = true;
       if (typeof playSfx === 'function') playSfx('pickup');
       flashToast('BOSS KEY ACQUIRED');
+      if (typeof playStory === 'function') playStory('boss_key');
       updateRoomLabel();
     }
   }
@@ -1385,27 +2736,60 @@ function update() {
   // --- chests ---
   (room.chests || []).forEach(c => {
     if (c.open) return;
-    if (Math.hypot(player.x - c.x, player.y - c.y) < player.r + c.r) {
+    if (Math.hypot(player.x - c.x, player.y - c.y) < (player.r + c.r) * pickRMult) {
       c.open = true;
       unlockedWeapons.add(c.weaponId);
       const g = ARSENAL_MAP[c.weaponId];
+      // Guarantee the grant covers this weapon's own magazine so picking it
+      // up never has to cannibalize your existing reserve just to load itself.
+      const magNeed = (typeof effectiveMagSize === 'function') ? effectiveMagSize(g) : ((g && g.magSize) || 12);
+      player.ammo = (player.ammo | 0) + Math.max(gunAmmoGrant(c.weaponId), magNeed);
+      if (typeof findWeaponThisRun === 'function') findWeaponThisRun(c.weaponId);
       if (typeof playSfx === 'function') playSfx('pickup');
-      flashToast('GOT ' + g.name);
-      
+      flashToast('GOT ' + g.name + ' · EXFIL TO KEEP');
       weaponIndex = ARSENAL.findIndex(w => w.id === c.weaponId);
-      setWeapon(weaponIndex);
+      setWeapon(weaponIndex, { force: true, quiet: true });
+      if (typeof playPickupDialogue === 'function') playPickupDialogue('weapon', g.name);
     }
   });
+
+  // --- relics (permanent upgrades, no points) ---
+  if (room.relicItem && !room.relicItem.taken) {
+    const ri = room.relicItem;
+    if (Math.hypot(player.x - ri.x, player.y - ri.y) < (player.r + ri.r) * pickRMult) {
+      ri.taken = true;
+      if (typeof playSfx === 'function') playSfx('pickup');
+      const prefer = ri.relicId || null;
+      const def = (typeof findRelicThisRun === 'function') ? findRelicThisRun(prefer)
+        : (typeof grantRelic === 'function') ? grantRelic(prefer) : null;
+      if (def) {
+        flashToast('RELIC · ' + def.name + ' · EXFIL TO KEEP');
+        player.hp = Math.min(player.maxHp, player.hp + 2);
+        if (typeof playPickupDialogue === 'function') playPickupDialogue('relic', def.name);
+      } else {
+        const gained = grantAmmoPickup();
+        flashToast(gained > 0 ? ('RELICS MAXED · +' + gained + ' AMMO') : 'RELICS MAXED · AMMO FULL');
+      }
+    }
+  }
 
   // --- particles ---
   for (let i = particles.length - 1; i >= 0; i--) {
     const pt = particles[i];
     pt.x += pt.dx; pt.y += pt.dy; pt.life--;
-    if (pt.life <= 0) particles.splice(i, 1);
+    if (pt.life <= 0) {
+      const last = particles.length - 1;
+      if (i !== last) particles[i] = particles[last];
+      particles.pop();
+    }
   }
   for (let i = explosions.length - 1; i >= 0; i--) {
     explosions[i].life--;
-    if (explosions[i].life <= 0) explosions.splice(i, 1);
+    if (explosions[i].life <= 0) {
+      const last = explosions.length - 1;
+      if (i !== last) explosions[i] = explosions[last];
+      explosions.pop();
+    }
   }
 }
 
@@ -1424,7 +2808,6 @@ function drawTile(name, x, y, w, h) {
   }
   return false;
 }
-
 
 function _paintStaticRoom(c, room) {
   const floorName = room.floorTile || 'floor1';
@@ -1479,7 +2862,6 @@ function _paintStaticRoom(c, room) {
   }
 }
 
-
 function drawBossTileRect(x, y, w, h) {
   if (!spriteReady('bosstile')) return false;
   for (let ty = y; ty < y + h; ty += TILE_SIZE) {
@@ -1491,7 +2873,6 @@ function drawBossTileRect(x, y, w, h) {
 }
 function drawRoom() {
   const room = rooms[curKey];
-  // Cache static floor/walls — only rebuild when room changes
   if (_roomCache.key === curKey && _roomCache.canvas) {
     ctx.drawImage(_roomCache.canvas, 0, 0);
   } else {
@@ -1502,15 +2883,12 @@ function drawRoom() {
     }
     const bctx = _roomCache.canvas.getContext('2d');
     bctx.imageSmoothingEnabled = false;
-    // Snapshot by drawing to main canvas then copy is wrong if entities exist.
-    // Instead: paint static into bctx via temporary context swap.
     const _saved = ctx;
     // Use a proxy: call internal painter that takes target
     _paintStaticRoom(bctx, room);
     _roomCache.key = curKey;
     ctx.drawImage(_roomCache.canvas, 0, 0);
   }
-  // Dynamic overlays continue below (doors etc. redrawn each frame)
   _drawRoomDynamicStart(room);
 }
 function _drawRoomDynamicStart(room) {
@@ -1519,9 +2897,6 @@ function _drawRoomDynamicStart(room) {
   const hall = isHallType(room);
   // static floor/walls/hazards/columns come from cache
     // --- doors ---
-  // doorClosed (solid black) shows for locked/uncleared doors, doorOpen
-  // (solid white) shows otherwise. The boss door is the one exception — it
-  // renders with the bosstile.png sprite plus a LOCKED label (below) so it
   // always reads as distinct from a normal door.
   const drawDoor = (dir, doorTo) => {
     if (!doorTo) return;
@@ -1534,8 +2909,6 @@ function _drawRoomDynamicStart(room) {
       ctx.fillStyle = locked || enemyLocked ? '#000000' : '#ffffff';
     };
     let dx = 0, dy = 0, dw = 0, dh = 0;
-    // Snap to the 16px tile grid so the door tile always lines up with the
-    // surrounding wall/floor tiles, even if DOOR_W or the canvas size changes.
     const snap = v => Math.round(v / TILE_SIZE) * TILE_SIZE;
     if (dir === 'n') { dx = snap(W / 2 - DOOR_W / 2); dy = 0; dw = DOOR_W; dh = WALL; }
     if (dir === 's') { dx = snap(W / 2 - DOOR_W / 2); dy = H - WALL; dw = DOOR_W; dh = WALL; }
@@ -1549,16 +2922,31 @@ function _drawRoomDynamicStart(room) {
     }
 
     if (locked) {
-      ctx.fillStyle = '#d8b34a';
+      const isExit = dest && dest.type === 'exithub';
+      ctx.fillStyle = isExit ? '#8fe0c9' : '#d8b34a';
       ctx.font = '11px monospace';
       ctx.textAlign = 'center';
-      if (dir === 'n') ctx.fillText('LOCKED', W / 2, 15);
-      if (dir === 's') ctx.fillText('LOCKED', W / 2, H - 8);
-      if (dir === 'w') ctx.fillText('LOCKED', 12, H / 2);
-      if (dir === 'e') ctx.fillText('LOCKED', W - 12, H / 2);
+      const label = isExit ? 'EXIT SEALED' : 'LOCKED';
+      if (dir === 'n') ctx.fillText(label, W / 2, 15);
+      if (dir === 's') ctx.fillText(label, W / 2, H - 8);
+      if (dir === 'w') ctx.fillText(label, 12, H / 2);
+      if (dir === 'e') ctx.fillText(label, W - 12, H / 2);
+    } else if (dest && dest.type === 'exithub' && bossDefeatedThisDepth) {
+      ctx.fillStyle = '#8fe0c9';
+      ctx.font = '11px monospace';
+      ctx.textAlign = 'center';
+      if (dir === 'n') ctx.fillText('EXIT', W / 2, 15);
+      if (dir === 's') ctx.fillText('EXIT', W / 2, H - 8);
+      if (dir === 'w') ctx.fillText('EXIT', 12, H / 2);
+      if (dir === 'e') ctx.fillText('EXIT', W - 12, H / 2);
     }
   };
   for (const d of ['n', 's', 'e', 'w']) drawDoor(d, room.doors[d]);
+
+  // --- exit hub pads ---
+  if (room.type === 'exithub' && room.zones) {
+    drawExitHubZones(room);
+  }
 
   // --- barrels ---
   room.barrels.forEach(b => {
@@ -1578,6 +2966,46 @@ function _drawRoomDynamicStart(room) {
       ctx.fillStyle = '#d8b34a';
       ctx.beginPath(); ctx.arc(k.x, k.y, k.r, 0, Math.PI * 2); ctx.fill();
     }
+  }
+
+  if (room.relicItem && !room.relicItem.taken) {
+    const ri = room.relicItem;
+    if (!ri.relicId && typeof RELIC_DEFS !== 'undefined' && RELIC_DEFS.length) {
+      ri.relicId = RELIC_DEFS[Math.floor(Math.random() * RELIC_DEFS.length)].id;
+    }
+    const rid = ri.relicId;
+    const pulse = 1 + 0.08 * Math.sin(Date.now() / 200);
+    ctx.save();
+    ctx.shadowColor = '#f4c430';
+    ctx.shadowBlur = 16;
+    ctx.fillStyle = 'rgba(244, 192, 48, 0.2)';
+    ctx.beginPath();
+    ctx.arc(ri.x, ri.y, 20 * pulse, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    const sz = 40 * pulse;
+    let drawn = false;
+    if (rid && typeof drawRelicIcon === 'function') {
+      drawn = drawRelicIcon(rid, ri.x, ri.y, sz);
+    }
+    if (!drawn && rid && typeof RELIC_IMAGES !== 'undefined' && RELIC_IMAGES[rid]) {
+      const img = RELIC_IMAGES[rid];
+      if (img.complete && img.naturalWidth > 0) {
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(img, ri.x - sz / 2, ri.y - sz / 2, sz, sz);
+        drawn = true;
+      }
+    }
+    if (!drawn) {
+      // Still loading — empty glow only, never letter "R"
+      ctx.strokeStyle = 'rgba(244, 200, 80, 0.9)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(ri.x, ri.y, 12, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   // --- chests ---
@@ -1614,11 +3042,71 @@ function _drawRoomDynamicStart(room) {
   });
 }
 
+function drawExitHubZones(room) {
+  const zones = room.zones || [];
+  const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 280);
+  for (let i = 0; i < zones.length; i++) {
+    const z = zones[i];
+    const elevLocked = z.kind === 'elevator' && room.choiceMode && !room.choiceMade;
+    const choiceDone = z.kind === 'choice' && room.choiceMade;
+    const hw = z.w / 2, hh = z.h / 2;
+    const left = z.x - hw, top = z.y - hh;
+    ctx.save();
+    // Tile fill for elevator/choice pads
+    const tileName = z.kind === 'elevator' ? 'floor3' : 'floor2';
+    ctx.globalAlpha = elevLocked || choiceDone ? 0.35 : (0.75 + 0.15 * pulse);
+    if (!drawTile(tileName, left, top, z.w, z.h)) {
+      ctx.fillStyle = z.color || '#fff';
+      ctx.fillRect(left, top, z.w, z.h);
+    }
+    // Pixel border
+    ctx.globalAlpha = elevLocked || choiceDone ? 0.45 : 1;
+    ctx.strokeStyle = elevLocked ? '#666' : (z.color || '#fff');
+    ctx.lineWidth = 2;
+    ctx.strokeRect(left + 1, top + 1, z.w - 2, z.h - 2);
+    // Pixelated label text
+    ctx.globalAlpha = elevLocked || choiceDone ? 0.45 : 1;
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 12px "Pixelify Sans", monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.imageSmoothingEnabled = false;
+    ctx.fillText(z.label || '', z.x, z.y - 8);
+    ctx.font = '10px "Pixelify Sans", monospace';
+    ctx.fillStyle = elevLocked ? '#888' : '#ccc';
+    ctx.fillText(elevLocked ? 'LOCKED' : (choiceDone && z.kind === 'choice' ? 'DONE' : (z.sub || '')), z.x, z.y + 12);
+    ctx.restore();
+  }
+  // Room hint + choice prompt
+  ctx.save();
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  ctx.font = '11px monospace';
+  ctx.textAlign = 'center';
+  if (room.choiceMode && !room.choiceMade) {
+    const depth = (typeof currentDepth === 'function') ? currentDepth() : 1;
+    const cfg = getExitChoiceConfig(depth);
+    if (cfg && cfg.prompt) {
+      ctx.fillStyle = 'rgba(255,255,255,0.75)';
+      // wrap-ish: draw prompt on one line truncated
+      const prompt = cfg.prompt.length > 72 ? cfg.prompt.slice(0, 70) + '…' : cfg.prompt;
+      ctx.fillText(prompt, W / 2, 28);
+      ctx.fillStyle = 'rgba(255,255,255,0.45)';
+      ctx.fillText('STAND ON A CHOICE · CONFIRM · THEN ELEVATORS', W / 2, 44);
+    } else {
+      ctx.fillText('STAND ON A CHOICE · THEN USE AN ELEVATOR', W / 2, 36);
+    }
+  } else {
+    ctx.fillText('STAND ON A PAD · CONFIRM TO PROCEED', W / 2, 36);
+  }
+  ctx.restore();
+}
+
 function drawEntities() {
   const room = rooms[curKey];
+  if (!room) return;
 
-  room.enemies.forEach(en => {
-    if (!en.alive) return;
+  (room.enemies || []).forEach(en => {
+    if (!en || !en.alive) return;
     const spriteKey = en.type === 'boss' ? en.spriteBase : en.type;
     if (spriteReady(spriteKey)) drawSpriteFit(SPRITES[spriteKey], en.x, en.y, en.r * 2.3);
     else {
@@ -1630,35 +3118,32 @@ function drawEntities() {
     ctx.fillRect(en.x - en.r, en.y - en.r - 10, en.r * 2, 4);
     ctx.fillStyle = '#8fe0c9';
     ctx.fillRect(en.x - en.r, en.y - en.r - 10, en.r * 2 * (en.hp / en.maxHp), 4);
-    if (en.type === 'boss') {
-      ctx.fillStyle = '#ff8f6b';
-      ctx.font = '11px monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText('MARTIAN OVERLORD', en.x, en.y - en.r - 16);
-    }
   });
 
   // --- projectiles ---
-  // Sprite is vertical (top = nose). Rotate so top points in travel direction.
-  playerProjectiles.forEach(p => {
-    const size = Math.max(42, p.r * 12); // 1.5x larger
-    if (!drawProjectileFast(p.x, p.y, p.dx, p.dy, size)) {
+  for (let i = 0; i < playerProjectiles.length; i++) {
+    const p = playerProjectiles[i];
+    const size = p.size || 42;
+    if (!drawProjectileFast(p.x, p.y, p.dx, p.dy, size, 1, p.rotIdx)) {
       ctx.fillStyle = p.color || '#eef2f8';
-      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+      ctx.fillRect(p.x - p.r, p.y - p.r, p.r * 2, p.r * 2);
     }
-  });
-  enemyProjectiles.forEach(p => {
-    const size = Math.max(33, p.r * 9); // 1.5x larger
-    if (!drawProjectileFast(p.x, p.y, p.dx, p.dy, size, 0.85)) {
+  }
+  for (let i = 0; i < enemyProjectiles.length; i++) {
+    const p = enemyProjectiles[i];
+    const size = p.size || 33;
+    if (!drawProjectileFast(p.x, p.y, p.dx, p.dy, size, 0.85, p.rotIdx)) {
       ctx.fillStyle = '#ff8f6b';
-      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+      ctx.fillRect(p.x - p.r, p.y - p.r, p.r * 2, p.r * 2);
     }
-  });
+  }
 
-  particles.forEach(pt => {
+  for (let i = 0; i < particles.length; i++) {
+    const pt = particles[i];
     const a = Math.max(0, pt.life / (pt.maxLife || 20));
-    ctx.globalAlpha = a;
+    if (a < 0.02) continue;
     const sz = pt.size || 6;
+    if (a < 0.99) ctx.globalAlpha = a;
     if (pt.sprite && typeof spriteReady === 'function' && spriteReady(pt.sprite)) {
       const img = SPRITES[pt.sprite];
       ctx.drawImage(img, pt.x - sz, pt.y - sz, sz * 2, sz * 2);
@@ -1666,8 +3151,8 @@ function drawEntities() {
       ctx.fillStyle = pt.color;
       ctx.fillRect(pt.x - sz / 2, pt.y - sz / 2, sz, sz);
     }
-    ctx.globalAlpha = 1;
-  });
+    if (a < 0.99) ctx.globalAlpha = 1;
+  }
   explosions.forEach(ex => {
     const t = 1 - ex.life / ex.maxLife;
     const r = ex.maxR * t;
@@ -1722,6 +3207,28 @@ function drawEntities() {
     }
   }
   ctx.restore();
+
+  // Laser Sight relic — line from gun muzzle toward cursor
+  if (typeof relicLaserSight === 'function' && relicLaserSight() && wpn.kind !== 'melee') {
+    const muzzle = 26;
+    const x0 = player.x + Math.cos(ang) * muzzle;
+    const y0 = player.y + Math.sin(ang) * muzzle;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255, 60, 60, 0.75)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(mouse.x, mouse.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // cursor tip
+    ctx.fillStyle = 'rgba(255, 80, 80, 0.9)';
+    ctx.beginPath();
+    ctx.arc(mouse.x, mouse.y, 3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
 }
 
 function drawHearts() {
@@ -1742,38 +3249,40 @@ function drawHearts() {
     }
   }
 
+  const w = currentWeapon();
+  const magSize = (typeof effectiveMagSize === 'function') ? effectiveMagSize(w)
+                : ((w && w.magSize) ? w.magSize : 12);
+  const mag = player.mag | 0;
+  const reserve = player.ammo | 0;
+
   const ammo = document.getElementById('ammoVal');
-  if (ammo) ammo.textContent = player.ammo;
+  if (ammo) {
+    if (player.reloadTimer > 0) ammo.textContent = 'REL…';
+    else ammo.textContent = mag + ' / ' + reserve;
+  }
 
   const iconsEl = document.getElementById('ammoIcons');
   if (iconsEl) {
-    const perIcon = Math.max(1, Math.ceil(AMMO_ICON_REF / AMMO_ICON_MAX));
-    const filled = Math.min(AMMO_ICON_MAX, Math.ceil(player.ammo / perIcon));
+    const maxIcons = Math.min(typeof AMMO_ICON_MAX !== 'undefined' ? AMMO_ICON_MAX : 12, magSize);
+    const perIcon = Math.max(1, Math.ceil(magSize / maxIcons));
+    const filled = Math.min(maxIcons, Math.ceil(mag / perIcon));
+    const total = maxIcons;
     const src = (SPRITES.ammobullet && SPRITES.ammobullet.ok) ? SPRITES.ammobullet.src
               : ((SPRITES.ammo && SPRITES.ammo.ok) ? SPRITES.ammo.src : '');
     let html = '';
-    for (let i = 0; i < AMMO_ICON_MAX; i++) {
+    for (let i = 0; i < total; i++) {
       const cls = i < filled ? '' : ' class="empty"';
       if (src) html += '<img src="' + src + '"' + cls + ' alt="">';
       else html += i < filled ? '▪' : '▫';
     }
-    if (iconsEl.dataset.sig !== String(filled) + src) {
+    const sig = filled + '/' + total + '/' + src + '/' + (player.reloadTimer > 0 ? 'R' : '');
+    if (iconsEl.dataset.sig !== sig) {
       iconsEl.innerHTML = html;
-      iconsEl.dataset.sig = String(filled) + src;
+      iconsEl.dataset.sig = sig;
     }
   }
 
-  const w = currentWeapon();
-  const rl = document.getElementById('rarityLabel');
-  if (rl) {
-    if (w.rarity && RARITY[w.rarity]) {
-      rl.textContent = RARITY[w.rarity].label;
-      rl.style.color = RARITY[w.rarity].color;
-    } else {
-      rl.textContent = w.kind === 'melee' ? 'MELEE' : 'STARTER';
-      rl.style.color = '#7d859c';
-    }
-  }
+  updateWeaponLabel();
 }
 
 function drawMinimap() {
@@ -1787,9 +3296,11 @@ function drawMinimap() {
     let color = '#5a6178';
     if (r.type === 'boss') color = '#c96b4f';
     else if (r.type === 'bosshall') color = '#6b3a4a';
+    else if (r.type === 'exithub') color = '#8fe0c9';
     else if (r.type === 'hallway') color = '#3a4258';
     else if (r.type === 'key') color = '#d8b34a';
     else if (r.type === 'chest') color = '#9fd8ff';
+    else if (r.type === 'relic') color = '#f4c430';
     mctx.fillStyle = k === curKey ? '#8fe0c9' : color;
     mctx.fillRect(r.x * cell + 2, r.y * cell + 2, cell - 4, cell - 4);
   }
@@ -1835,8 +3346,9 @@ function drawDebug() {
     'DEBUG  [`/F3 toggle]',
     'room: ' + curKey + '  type: ' + room.type,
     'floor: ' + (room.floorTile || '?') + '  wall: ' + (room.wallTile || '?'),
-    'enemies: ' + room.enemies.filter(e => e.alive).length + '/' + room.enemies.length +
-      '  barrels: ' + room.barrels.filter(b => b.alive).length,
+    'enemies: ' + (room.enemies || []).filter(e => e && e.alive).length + '/' + (room.enemies || []).length +
+      '  barrels: ' + (room.barrels || []).filter(b => b && b.alive).length +
+      '  exit: ' + exitHubKey + ' bossDead: ' + bossDefeatedThisDepth,
     'cleared: ' + room.cleared + '  doors: ' + Object.keys(room.doors).join(','),
     'hp: ' + player.hp + '/' + player.maxHp + '  ammo: ' + player.ammo,
     'weapon: ' + currentWeapon().id + '  unlocked: ' + unlockedWeapons.size,
@@ -1853,21 +3365,26 @@ function drawDebug() {
 
 let _fpsFrames = 0, _fpsLast = performance.now(), _fpsValue = 0;
 function loop() {
-  ctx.imageSmoothingEnabled = false;
-  ctx.webkitImageSmoothingEnabled = false;
-  ctx.mozImageSmoothingEnabled = false;
-  if (gameMode === 'invaders' && started && typeof updateInvaders === 'function') {
-    updateInvaders(); drawInvaders();
-  } else if (gameMode === 'openfield' && started && typeof updateOpenField === 'function') {
-    updateOpenField(); drawOpenField();
-  } else {
-    update();
-    drawRoom();
-    drawEntities();
-    drawDebug();
-    drawMinimap();
-  }
+  update();
+  drawRoom();
+  drawEntities();
+  drawDebug();
+  drawMinimap();
   drawHearts();
+  // Speedrun clock
+  if (started && !gameOver && (typeof showSpeedrun === 'undefined' || showSpeedrun)) {
+    let ms = runTimerAccum;
+    if (runTimerRunning && !paused) ms += performance.now() - runTimerStart;
+    const totalSec = Math.floor(ms / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    const cs = Math.floor((ms % 1000) / 10);
+    const clock = (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s + '.' + (cs < 10 ? '0' : '') + cs;
+    ctx.fillStyle = '#8fe0c9';
+    ctx.font = '12px "Pixelify Sans", monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(clock, W - 10, 18);
+  }
   if (typeof showFps !== 'undefined' && showFps) {
     _fpsFrames++;
     const now = performance.now();
@@ -1879,7 +3396,7 @@ function loop() {
     ctx.fillStyle = '#fff';
     ctx.font = '12px monospace';
     ctx.textAlign = 'right';
-    ctx.fillText(_fpsValue + ' FPS', W - 10, 18);
+    ctx.fillText(_fpsValue + ' FPS', W - 10, 34);
   }
   requestAnimationFrame(loop);
 }
