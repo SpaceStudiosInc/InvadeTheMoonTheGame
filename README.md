@@ -64,7 +64,26 @@ Sprites: `assets/bosses/boss1.png` … `boss9.png`. Logic: `pickBossTypeForDepth
 - SFX / Music + volumes
 - Particles, Minimap, FPS, **Speedrun** timer
 - Fullscreen
-- **Reset** player data (clears localStorage meta)
+- **Reset** player data (clears localStorage meta and stats)
+
+## Speedrun timer
+
+- The clock in the top-right corner starts counting the moment you **leave the
+  starting room** of a depth (not on deploy), so menu/loadout time never
+  counts.
+- It resets for each new depth (including via **CONTINUE**), so it's really a
+  per-level split.
+- When you defeat that depth's boss, the split freezes and — if it beats your
+  previous best — is saved as that depth's best time.
+
+## Stats
+
+A **Stats** button on the main menu shows:
+
+- Lifetime totals: best depth reached, runs started, successful extracts,
+  deaths, enemies killed, bosses defeated.
+- Best clear time for every depth (1–16) you've beaten, using the speedrun
+  timer above. Unbeaten depths show `--:--.--`.
 
 ## Tuning
 
@@ -82,4 +101,16 @@ Depth scaling lives in `game-skills.js` (`depthBossHp`, `depthEnemyCountBonus`, 
 localStorage keys:
 
 - `itm_meta_v2` — max depth, unlocked guns/relics
+- `itm_stats_v1` — best time per depth, runs/extracts/deaths/kills/boss-kills
 - `itm_sfx`, `itm_music`, volumes, particles, minimap, fps, speedrun
+
+
+## Mobile / responsive
+
+The game keeps an internal resolution of **800×544** (pixel-perfect combat) and scales the whole UI to fit any screen size (desktop, tablet, phone, landscape/portrait).
+
+- **Desktop:** WASD + mouse as before. Fullscreen option in Options.
+- **Phone / tablet:** virtual joystick (move), FIRE button (hold for auto), R reload, Q/E cycle weapons. Touch on the playfield aims and fires.
+- Viewport is locked against pinch-zoom; overscroll is disabled while in-game for a native-app feel.
+
+Serve the folder over HTTPS or localhost for best audio/fullscreen behavior on mobile browsers.

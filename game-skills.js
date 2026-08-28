@@ -31,6 +31,127 @@ const runBag = {
   secretPath: false
 };
 
+// ── player stats (best times + lifetime totals) ──────────
+const stats = {
+  bestDepthTimes: {},   // depth (1-16) -> best clear time in ms (start-room-exit → boss death)
+  totalRuns: 0,         // missions deployed (fresh runs, not mid-run continues)
+  totalExtracts: 0,     // successful EXFILs
+  totalDeaths: 0,
+  totalKills: 0,
+  totalBossKills: 0
+};
+
+function loadStats() {
+  try {
+    const raw = localStorage.getItem('itm_stats_v1');
+    const data = JSON.parse(raw || 'null');
+    if (data) {
+      stats.bestDepthTimes = (data.bestDepthTimes && typeof data.bestDepthTimes === 'object') ? data.bestDepthTimes : {};
+      stats.totalRuns = data.totalRuns | 0;
+      stats.totalExtracts = data.totalExtracts | 0;
+      stats.totalDeaths = data.totalDeaths | 0;
+      stats.totalKills = data.totalKills | 0;
+      stats.totalBossKills = data.totalBossKills | 0;
+    }
+  } catch (e) {}
+}
+
+function saveStats() {
+  try {
+    localStorage.setItem('itm_stats_v1', JSON.stringify({
+      bestDepthTimes: stats.bestDepthTimes,
+      totalRuns: stats.totalRuns,
+      totalExtracts: stats.totalExtracts,
+      totalDeaths: stats.totalDeaths,
+      totalKills: stats.totalKills,
+      totalBossKills: stats.totalBossKills
+    }));
+  } catch (e) {}
+}
+
+function resetStats() {
+  stats.bestDepthTimes = {};
+  stats.totalRuns = 0;
+  stats.totalExtracts = 0;
+  stats.totalDeaths = 0;
+  stats.totalKills = 0;
+  stats.totalBossKills = 0;
+  saveStats();
+}
+
+/** Record a depth clear time (ms) if it beats the stored best for that depth. */
+function recordDepthTime(depth, ms) {
+  depth = depth | 0;
+  ms = ms | 0;
+  if (depth < 1 || !(ms > 0)) return;
+  const cur = stats.bestDepthTimes[depth];
+  if (cur == null || ms < cur) {
+    stats.bestDepthTimes[depth] = ms;
+    saveStats();
+  }
+}
+
+function recordRunStart() {
+  stats.totalRuns = (stats.totalRuns | 0) + 1;
+  saveStats();
+}
+
+function recordExtract() {
+  stats.totalExtracts = (stats.totalExtracts | 0) + 1;
+  saveStats();
+}
+
+function recordDeath() {
+  stats.totalDeaths = (stats.totalDeaths | 0) + 1;
+  saveStats();
+}
+
+function recordKill(en) {
+  stats.totalKills = (stats.totalKills | 0) + 1;
+  if (en && en.type === 'boss') stats.totalBossKills = (stats.totalBossKills | 0) + 1;
+  saveStats();
+}
+
+/** mm:ss.cc — shared by the in-game speedrun clock and the stats screen. */
+function formatClock(ms) {
+  ms = Math.max(0, ms | 0);
+  const totalSec = Math.floor(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  const cs = Math.floor((ms % 1000) / 10);
+  return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s + '.' + (cs < 10 ? '0' : '') + cs;
+}
+
+function renderStatsUI() {
+  const summaryEl = document.getElementById('statsSummary');
+  const listEl = document.getElementById('statsList');
+  if (summaryEl) {
+    const cards = [
+      ['BEST DEPTH', String(meta.maxDepth || 1)],
+      ['RUNS', String(stats.totalRuns | 0)],
+      ['EXTRACTS', String(stats.totalExtracts | 0)],
+      ['DEATHS', String(stats.totalDeaths | 0)],
+      ['KILLS', String(stats.totalKills | 0)],
+      ['BOSSES', String(stats.totalBossKills | 0)]
+    ];
+    summaryEl.innerHTML = cards.map(c =>
+      '<div class="stat-card"><div class="stat-card-val">' + c[1] + '</div><div class="stat-card-label">' + c[0] + '</div></div>'
+    ).join('');
+  }
+  if (listEl) {
+    let html = '';
+    for (let d = 1; d <= 16; d++) {
+      const ms = stats.bestDepthTimes[d];
+      const band = (typeof depthBand === 'function') ? depthBand(d) : '';
+      html += '<div class="time-row' + (ms == null ? ' empty' : '') + '">'
+        + '<div class="time-row-depth">DEPTH ' + d + '<span class="time-row-band">' + (band ? band.toUpperCase() : '') + '</span></div>'
+        + '<div class="time-row-val">' + (ms == null ? '--:--.--' : formatClock(ms)) + '</div>'
+        + '</div>';
+    }
+    listEl.innerHTML = html;
+  }
+}
+
 function loadMeta() {
   try {
     const raw = localStorage.getItem('itm_meta_v2');
@@ -282,7 +403,7 @@ function depthEnemyCountBonus() {
   if (d <= 5) return 0;
   if (d <= 10) return 1;
   if (d <= 15) return 2;
-  return 3;
+  return 2;
 }
 
 function depthBossHp() {
@@ -501,3 +622,4 @@ function grantRelic(id) { return findRelicThisRun(id); }
 function onDepthCleared() {  }
 
 loadMeta();
+loadStats();

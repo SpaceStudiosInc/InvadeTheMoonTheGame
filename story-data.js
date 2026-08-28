@@ -45,11 +45,14 @@ const STORY_DATA = {
       enter_combat_room: [
         { speaker: 'SERENITY', text: 'Kill all that moves.' }
       ],
+      // Fires when the player actually opens a weapon chest (not on room enter)
       open_chest: [
+        { speaker: 'YOU', text: 'Ooh, shiny.' },
         { speaker: 'SERENITY', text: 'You will have to survive this level to keep your rewards.' }
       ],
+      // Fires when picking up the boss key
       boss_key: [
-        { speaker: 'YOU', text: 'Ooh, shiny.' }
+        { speaker: 'SERENITY', text: 'Boss access key acquired. Proceed when ready.' }
       ],
       enter_boss: [
         { speaker: 'SERENITY', text: 'Kill the big one.' },

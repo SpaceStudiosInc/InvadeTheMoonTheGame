@@ -22,33 +22,36 @@ const MAX_PARTICLES = 64;
 const BOSS_HP = 200;
 const HALL_TILES = 6;           // walkable corridor thickness in tiles (was 4 — too tight)
 const HALL_THICKNESS = HALL_TILES * 16; // 96px — matches DOOR_W
-const HALL_ENEMY_CHANCE = 0.18; // rare chance a hallway has 1 enemy
+const HALL_ENEMY_CHANCE = 0.42; // hallways often have 1–2 enemies
 const BOSS_SPAWN_DELAY = 60;    // frames (~1s) before boss appears after entering
 const ENEMY_SPAWN_DELAY = 40;   // frames (~0.65s) before room enemies wake up after you enter
 const HALL_WALL_SIDE = 1;       // vertical halls: 1 tile wall each side
 const HALL_WALL_TOP = 1;        // horizontal halls: 1 tile on top (was 2 — caused offset)
 const HALL_WALL_BOTTOM = 1;     // horizontal halls: 1 tile on bottom
 // Columns & hazards & shapes
-const COLUMN_TILES = 4;         // column size in tiles (2x previous → 4x4)
+const COLUMN_TILES = 3;         // smaller columns → more open floor space
 
 const ROOM_LAYOUTS = {
   plain:       { kind: 'plain' },
-  arena:       { kind: 'safe_circle', radiusTiles: 13 },
-  tight_arena: { kind: 'safe_circle', radiusTiles: 11 },
-  rim_danger:  { kind: 'kill_border', borderTiles: 2 },
-  thick_rim:   { kind: 'kill_border', borderTiles: 3 },
-  cross:       { kind: 'cross', armTiles: 5 },
-  loop:        { kind: 'loop', pathTiles: 5, innerRadiusTiles: 4 },
-  islands:     { kind: 'islands', count: 3, padTiles: 5 },
-  gauntlet:    { kind: 'gauntlet', edgeTiles: 1 }
+  arena:       { kind: 'safe_circle', radiusTiles: 14 },
+  tight_arena: { kind: 'safe_circle', radiusTiles: 12 },
+  rim_danger:  { kind: 'kill_border', borderTiles: 1 },
+  thick_rim:   { kind: 'kill_border', borderTiles: 2 },
+  cross:       { kind: 'cross', armTiles: 6 },
+  loop:        { kind: 'loop', pathTiles: 6, innerRadiusTiles: 3 },
+  islands:     { kind: 'islands', count: 3, padTiles: 6 },
+  gauntlet:    { kind: 'gauntlet', edgeTiles: 1 },
+  pillars:     { kind: 'cross', armTiles: 4 },
+  ring:        { kind: 'loop', pathTiles: 7, innerRadiusTiles: 4 }
 };
 
 const LAYOUT_POOLS = {
   start:    ['plain'],
-  normal:   ['plain', 'plain', 'plain', 'arena', 'rim_danger', 'cross', 'loop'],
-  chest:    ['plain', 'plain', 'rim_danger'],
+  normal:   ['plain', 'arena', 'rim_danger', 'cross', 'loop', 'islands', 'pillars', 'ring', 'plain', 'arena'],
+  chest:    ['plain'],
   key:      ['plain', 'arena'],
-  boss:     ['plain'],
+  puzzle:   ['plain'],
+  boss:     ['arena', 'plain'],
   hallway:  ['plain'],
   bosshall: ['plain']
 };
@@ -64,6 +67,27 @@ function drawSpriteFit(img, x, y, maxSize) {
   ctx.drawImage(img, dx, dy, w, h);
 }
 
+/** Draw enemy with optional horizontal frame strip animation. */
+function drawEnemySprite(type, x, y, maxSize, animTick) {
+  const key = type === 'boss' ? null : type;
+  if (!key || !spriteReady(key)) return false;
+  const img = SPRITES[key];
+  const meta = (typeof ENEMY_SPRITE_META !== 'undefined' && ENEMY_SPRITE_META[key]) || null;
+  ctx.imageSmoothingEnabled = false;
+  if (meta && meta.frames > 1) {
+    const fw = meta.frameW, fh = meta.frameH;
+    const speed = meta.animSpeed || 6;
+    const f = Math.floor((animTick || 0) / speed) % meta.frames;
+    const scale = maxSize / Math.max(fw, fh);
+    const w = Math.round(fw * scale), h = Math.round(fh * scale);
+    const dx = Math.round(x - w / 2), dy = Math.round(y - h / 2);
+    ctx.drawImage(img, f * fw, 0, fw, fh, dx, dy, w, h);
+  } else {
+    drawSpriteFit(img, x, y, maxSize);
+  }
+  return true;
+}
+
 function seededRng(seedStr) {
   let seed = 0;
   for (let i = 0; i < seedStr.length; i++) seed += seedStr.charCodeAt(i) * (i + 1);
@@ -74,8 +98,17 @@ const SPRITE_PATHS = {
   player:     'assets/sprites/astronaut.png',
   slime:      'assets/sprites/martian_crawler.png',
   shooter:    'assets/sprites/martian_gunner.png',
+  charger:    'assets/sprites/Charger.png',
+  tank:       'assets/sprites/Enemy2.png',
+  spitter:    'assets/sprites/Enemy3.png',
+  enemy1:     'assets/sprites/Enemy1.png',
+  enemy2:     'assets/sprites/Enemy2.png',
+  enemy3:     'assets/sprites/Enemy3.png',
+  enemy4:     'assets/sprites/Enemy4.png',
+  enemy5:     'assets/sprites/Enemy5.png',
   barrel:     'assets/sprites/explosive_barrel.png',
   chest:      'assets/sprites/chest.png',
+  elevator:   'assets/sprites/elevator.png',
   health:     'assets/sprites/health.png',
   heart:      'assets/sprites/Heart.png',
   emptyHeart: 'assets/sprites/EmptyHeart.png',
@@ -105,6 +138,15 @@ const SPRITE_PATHS = {
   relic_pierce:    'assets/sprites/relics/pierce.png',
   relic_laser:     'assets/sprites/relics/laser.png'
 };
+
+// Multi-frame enemy sheets (horizontal strips). Single-frame = frames:1
+const ENEMY_SPRITE_META = {
+  charger: { frameW: 16, frameH: 16, frames: 1, animSpeed: 8 },
+  tank:    { frameW: 16, frameH: 16, frames: 1, animSpeed: 8 },
+  slime:   { frameW: 16, frameH: 16, frames: 1, animSpeed: 10 },
+  shooter: { frameW: 16, frameH: 16, frames: 1, animSpeed: 10 },
+  spitter: { frameW: 16, frameH: 16, frames: 1, animSpeed: 10 }
+};
 const AMMO_ICON_MAX = 10;
 const AMMO_ICON_REF = 30;
 
@@ -116,7 +158,7 @@ const RARITY = {
 };
 
 const GUNS = [
-  { id: 'pistol', name: 'PISTOL', file: 'assets/guns/AutoGun.png', frameW: 32, frameH: 32, frames: 3,
+  { id: 'pistol', name: 'PISTOL', file: 'assets/guns/Pistol.png', frameW: 32, frameH: 32, frames: 3,
     rarity: null, dmg: 2, cooldown: 14, speed: 10, pr: 4, pellets: 1, auto: false,
     ammoCost: 1, magSize: 12, reloadTime: 40,
     color: '#eef2f8', sfx: 'pistol' },
@@ -132,7 +174,7 @@ const GUNS = [
     color: '#f4e8b0', sfx: 'rifle' },
 
   // Slow rocket — 1 in the tube, explodes on impact
-  { id: 'rocket', name: 'ROCKET LAUNCHER', file: 'assets/guns/RPG.png', frameW: 88, frameH: 48, frames: 3,
+  { id: 'rocket', name: 'ROCKET LAUNCHER', file: 'assets/guns/RocketLauncher.png', frameW: 88, frameH: 48, frames: 3,
     rarity: 'rare', dmg: 8, cooldown: 20, speed: 4.2, pr: 5, pellets: 1, auto: false,
     ammoCost: 1, magSize: 1, reloadTime: 70,
     explosive: true, splashR: 90, splashDmg: 8, color: '#f4e08a', sfx: 'explosion' },

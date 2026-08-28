@@ -2,7 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>LUNAR COMPLEX</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#000000">
+<title>INVADE THE MOON</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -15,6 +20,11 @@
     image-rendering: pixelated;
     image-rendering: -moz-crisp-edges;
     image-rendering: crisp-edges;
+    -webkit-font-smoothing: none;
+    -moz-osx-font-smoothing: unset;
+    text-rendering: geometricPrecision;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
   }
   html, body {
     margin: 0; padding: 0;
@@ -23,10 +33,35 @@
     font-family: 'Pixelify Sans', monospace;
     overflow: hidden;
     display: flex; align-items: center; justify-content: center;
-    height: 100vh;
+    height: 100%;
+    height: 100dvh;
+    width: 100%;
+    position: fixed;
+    inset: 0;
+    overscroll-behavior: none;
+    -webkit-user-select: none;
+    user-select: none;
   }
   #wrap {
-    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    /* Scale entire game stack to fit any screen while keeping internal 800×544 resolution */
+    --game-w: 800;
+    --game-h: 544;
+    --scale: min(1, calc((100vw - 16px) / var(--game-w)), calc((100dvh - 100px) / (var(--game-h) + 80)));
+    transform: scale(var(--scale));
+    transform-origin: center center;
+    width: calc(var(--game-w) * 1px);
+  }
+  @media (max-width: 900px), (max-height: 700px) {
+    #wrap {
+      --scale: min(1, calc((100vw - 8px) / var(--game-w)), calc((100dvh - 24px) / (var(--game-h) + 72)));
+    }
+  }
+  /* On very small phones, prefer fitting width and allow slight HUD shrink */
+  @media (max-width: 480px) {
+    #wrap {
+      --scale: min(1, calc(100vw / var(--game-w)), calc((100dvh - 16px) / (var(--game-h) + 64)));
+    }
   }
 
   /* ── HUD (in-game only) ── */
@@ -37,10 +72,14 @@
     display: none;
     align-items: center;
     justify-content: space-between;
-    padding: 10px 16px;
-    gap: 16px;
+    padding: 8px 12px;
+    gap: 12px;
+    flex-shrink: 0;
   }
   body.in-game #hud { display: flex; }
+  body.in-game:not(.show-cursor) { cursor: none; }
+  body.in-game:not(.show-cursor) canvas#game { cursor: none; }
+  body.show-cursor, body.show-cursor canvas#game { cursor: default; }
 
   #hud-left {
     display: flex; flex-direction: column; gap: 6px; justify-content: center;
@@ -114,9 +153,75 @@
     border: 2px solid #fff;
     width: 800px;
     height: 544px;
+    max-width: 100%;
     image-rendering: pixelated;
     image-rendering: -moz-crisp-edges;
     image-rendering: crisp-edges;
+    touch-action: none; /* prevent scroll/zoom while aiming */
+  }
+
+  /* ── Mobile virtual controls (shown only on coarse pointers / touch) ── */
+  #mobileControls {
+    display: none;
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 50;
+  }
+  body.show-mobile-controls #mobileControls { display: block; }
+  body.show-mobile-controls.in-game #mobileControls { display: block; }
+  .mc-stick, .mc-btn {
+    pointer-events: auto;
+    position: absolute;
+    border: 2px solid rgba(255,255,255,0.55);
+    background: rgba(0,0,0,0.35);
+    border-radius: 50%;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  #mcJoystick {
+    width: 120px; height: 120px;
+    left: max(16px, env(safe-area-inset-left));
+    bottom: max(20px, env(safe-area-inset-bottom));
+  }
+  #mcKnob {
+    position: absolute;
+    width: 48px; height: 48px;
+    left: 50%; top: 50%;
+    margin: -24px 0 0 -24px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.45);
+    border: 2px solid #fff;
+    pointer-events: none;
+  }
+  #mcFire {
+    width: 88px; height: 88px;
+    right: max(16px, env(safe-area-inset-right));
+    bottom: max(28px, env(safe-area-inset-bottom));
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Pixelify Sans', monospace;
+    font-size: 14px; letter-spacing: 1px; color: #fff;
+  }
+  #mcFire:active, #mcFire.active { background: rgba(255,255,255,0.25); }
+  #mcReload {
+    width: 56px; height: 56px;
+    right: max(16px, env(safe-area-inset-right));
+    bottom: max(130px, calc(env(safe-area-inset-bottom) + 110px));
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Pixelify Sans', monospace;
+    font-size: 12px; color: #ccc;
+  }
+  #mcWeapon {
+    width: 56px; height: 56px;
+    right: max(84px, calc(env(safe-area-inset-right) + 68px));
+    bottom: max(130px, calc(env(safe-area-inset-bottom) + 110px));
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Pixelify Sans', monospace;
+    font-size: 12px; color: #ccc;
+  }
+  @media (pointer: fine) and (hover: hover) {
+    /* Prefer hiding virtual sticks on real desktop mice unless forced */
+    body:not(.force-mobile-controls) #mobileControls { display: none !important; }
   }
 
   #msg {
@@ -379,8 +484,92 @@
   }
   .skill-name { font-size: 13px; letter-spacing: 1px; color: #fff; }
   .skill-desc { font-size: 11px; color: #888; }
+
+  /* ── Stats screen ── */
+  #statsScreen.overlay {
+    justify-content: flex-start;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 16px 12px 24px;
+    gap: 10px;
+  }
+  #statsScreen h2 { margin-top: 4px; flex-shrink: 0; }
+  #statsScreen .menu-btns { margin-top: 8px !important; }
+  .stats-summary {
+    width: min(460px, 92vw);
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+  .stat-card {
+    border: 2px solid #333;
+    padding: 10px 6px;
+    text-align: center;
+  }
+  .stat-card-val {
+    font-size: 20px;
+    color: #8fe0c9;
+    letter-spacing: 1px;
+  }
+  .stat-card-label {
+    font-size: 10px;
+    color: #888;
+    letter-spacing: 1px;
+    margin-top: 2px;
+  }
+  .time-list {
+    width: min(460px, 92vw);
+    max-height: 260px;
+    overflow-y: auto;
+    display: flex; flex-direction: column; gap: 6px;
+    text-align: left;
+  }
+  .time-row {
+    display: flex; align-items: center; justify-content: space-between;
+    border: 2px solid #333; padding: 7px 12px;
+  }
+  .time-row.empty { opacity: 0.45; }
+  .time-row-depth {
+    font-size: 13px; letter-spacing: 1px; color: #fff;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .time-row-band {
+    font-size: 10px; color: #888; letter-spacing: 1px;
+  }
+  .time-row-val {
+    font-size: 14px; color: #f4c430; letter-spacing: 1px;
+    font-variant-numeric: tabular-nums;
+  }
   .opt-divider {
     border: none; border-top: 1px solid #333; margin: 4px 0;
+  }
+
+  /* Touch-friendly targets & small-screen overlays */
+  @media (pointer: coarse) {
+    .overlay button {
+      min-height: 44px;
+      min-width: 220px;
+      font-size: 15px;
+      padding: 12px 28px;
+    }
+    .mission-cell {
+      min-height: 44px;
+      padding: 14px 6px;
+      font-size: 14px;
+    }
+    .loadout-item {
+      min-height: 44px;
+      padding: 10px 12px;
+    }
+    .opt-toggle {
+      min-height: 40px;
+    }
+  }
+  @media (max-width: 420px) {
+    .overlay h1 { font-size: 26px; letter-spacing: 2px; }
+    .overlay h2 { font-size: 18px; letter-spacing: 2px; }
+    .mission-grid { grid-template-columns: repeat(5, 1fr); gap: 4px; max-width: 100%; }
+    .mission-cell { font-size: 11px; padding: 10px 2px; }
   }
 </style>
 </head>
@@ -430,7 +619,8 @@
       <div class="menu-btns">
         <button id="btnStart">Start</button>
         <button id="btnOptions" class="secondary">Options</button>
-        <div class="sub" style="image-rendering:pixelated;letter-spacing:1px;">WASD MOVE · MOUSE LOOK · CLICK / SPACE FIRE</div>
+        <button id="btnStats" class="secondary">Stats</button>
+        <div class="sub" style="image-rendering:pixelated;letter-spacing:1px;">WASD / JOYSTICK · MOUSE / TOUCH AIM · CLICK / FIRE BTN</div>
         <div class="sub" id="titleDepth" style="margin-top:6px;opacity:.85;">EXFIL after boss to unlock</div>
       </div>
     </div>
@@ -481,6 +671,17 @@
       <div class="sub" style="margin-top:8px;">Collection of items you have EXFIL'd with. Die before extracting and the run bag is lost.</div>
       <div class="menu-btns" style="margin-top:14px;">
         <button id="btnSkillsBack" class="secondary">Back</button>
+      </div>
+    </div>
+
+    <!-- STATS -->
+    <div id="statsScreen" class="overlay">
+      <h2>STATS</h2>
+      <div class="stats-summary" id="statsSummary"></div>
+      <div class="sub" style="margin-top:2px;">Best clear time per depth · starts when you leave the first room</div>
+      <div class="time-list" id="statsList"></div>
+      <div class="menu-btns" style="margin-top:14px;">
+        <button id="btnStatsBack" class="secondary">Back</button>
       </div>
     </div>
 
@@ -620,22 +821,26 @@
     const skills = document.getElementById('skillScreen');
     const loadout = document.getElementById('loadoutScreen');
     const mission = document.getElementById('missionScreen');
+    const statsScreen = document.getElementById('statsScreen');
 
     let returnTo = 'title';
     let selectedGun = 'pistol';
     let selectedRelic = null;
     let selectedDepth = 1;
 
-    function setInGame(on) { document.body.classList.toggle('in-game', !!on); }
+    function setInGame(on) {
+      document.body.classList.toggle('in-game', !!on);
+      if (typeof updateGameScale === 'function') updateGameScale();
+    }
     setInGame(false);
 
     function hideAll() {
-      [title, briefing, pause, options, skills, loadout, mission].forEach(el => el && el.classList.remove('show'));
+      [title, briefing, pause, options, skills, loadout, mission, statsScreen].forEach(el => el && el.classList.remove('show'));
     }
     function show(el) {
       hideAll();
       if (el) el.classList.add('show');
-      if (el === title || el === briefing || el === options || el === skills || el === loadout || el === mission) setInGame(false);
+      if (el === title || el === briefing || el === options || el === skills || el === loadout || el === mission || el === statsScreen) setInGame(false);
       if (el === pause) setInGame(true);
     }
 
@@ -858,6 +1063,18 @@
     document.getElementById('btnPauseOptions').addEventListener('click', () => openOptions('pause'));
     document.getElementById('btnOptionsBack').addEventListener('click', goBack);
 
+    const btnStats = document.getElementById('btnStats');
+    if (btnStats) {
+      btnStats.addEventListener('click', () => {
+        if (typeof loadMeta === 'function') loadMeta();
+        if (typeof loadStats === 'function') loadStats();
+        if (typeof renderStatsUI === 'function') renderStatsUI();
+        show(statsScreen);
+      });
+    }
+    const btnStatsBack = document.getElementById('btnStatsBack');
+    if (btnStatsBack) btnStatsBack.addEventListener('click', () => show(title));
+
     document.getElementById('btnToggleSfx').addEventListener('click', () => {
       if (typeof setSfxEnabled === 'function') setSfxEnabled(!sfxEnabled);
       refreshOptionsUI();
@@ -933,10 +1150,11 @@
       if (typeof toggleFullscreen === 'function') toggleFullscreen();
     });
     document.getElementById('btnResetData').addEventListener('click', () => {
-      if (!confirm('Reset all player data? (depths, guns, relics) This cannot be undone.')) return;
+      if (!confirm('Reset all player data? (depths, guns, relics, stats) This cannot be undone.')) return;
       try {
         localStorage.removeItem('itm_meta_v2');
         localStorage.removeItem('itm_meta');
+        localStorage.removeItem('itm_stats_v1');
       } catch (e) {}
       if (typeof meta !== 'undefined') {
         meta.maxDepth = 1;
@@ -945,6 +1163,7 @@
         meta.relicRanks = {};
       }
       if (typeof saveMeta === 'function') saveMeta();
+      if (typeof resetStats === 'function') resetStats();
       alert('Player data reset.');
       location.reload();
     });
@@ -969,5 +1188,15 @@
     refreshOptionsUI();
   })();
 </script>
+
+<!-- Mobile touch controls (hidden on desktop) -->
+<div id="mobileControls" aria-hidden="true">
+  <div id="mcJoystick" class="mc-stick">
+    <div id="mcKnob"></div>
+  </div>
+  <button type="button" id="mcFire" class="mc-btn">FIRE</button>
+  <button type="button" id="mcReload" class="mc-btn">R</button>
+  <button type="button" id="mcWeapon" class="mc-btn">Q/E</button>
+</div>
 </body>
 </html>
