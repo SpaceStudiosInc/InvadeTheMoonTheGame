@@ -1713,11 +1713,18 @@ canvas.addEventListener('wheel', e => {
 function updateGameScale() {
   const wrap = document.getElementById('wrap');
   if (!wrap) return;
-  const hudExtra = document.body.classList.contains('in-game') ? 80 : 40;
-  const pad = 12;
-  const vw = window.innerWidth - pad;
-  const vh = window.innerHeight - pad;
-  const scale = Math.min(1, vw / W, Math.max(0.35, (vh - hudExtra) / H));
+  const portrait = window.innerHeight > window.innerWidth;
+  const inGame = document.body.classList.contains('in-game');
+  const touch = (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) ||
+    ('ontouchstart' in window);
+  // Reserve space for HUD + virtual controls so game doesn't sit under them
+  const bottomReserve = inGame ? (touch ? (portrait ? 150 : 100) : 48) : 24;
+  const topReserve = inGame ? 56 : 16;
+  const padX = portrait ? 8 : 12;
+  const vw = Math.max(200, window.innerWidth - padX * 2);
+  const vh = Math.max(160, window.innerHeight - topReserve - bottomReserve);
+  let scale = Math.min(vw / W, vh / H);
+  scale = Math.max(0.38, Math.min(1.25, scale));
   wrap.style.setProperty('--scale', String(scale));
   wrap.style.setProperty('--game-w', String(W));
   wrap.style.setProperty('--game-h', String(H));

@@ -223,6 +223,24 @@
     /* Prefer hiding virtual sticks on real desktop mice unless forced */
     body:not(.force-mobile-controls) #mobileControls { display: none !important; }
   }
+  @media (orientation: portrait) and (max-width: 600px) {
+    #mcJoystick { width: 132px; height: 132px; }
+    #mcKnob { width: 52px; height: 52px; margin: -26px 0 0 -26px; }
+    #mcFire { width: 96px; height: 96px; font-size: 15px; }
+    #mcReload, #mcWeapon {
+      width: 58px; height: 58px;
+      bottom: max(140px, calc(env(safe-area-inset-bottom) + 120px));
+    }
+  }
+  @media (orientation: landscape) and (max-height: 480px) {
+    #mcJoystick { width: 96px; height: 96px; bottom: max(8px, env(safe-area-inset-bottom)); }
+    #mcKnob { width: 38px; height: 38px; margin: -19px 0 0 -19px; }
+    #mcFire { width: 70px; height: 70px; font-size: 12px; bottom: max(12px, env(safe-area-inset-bottom)); }
+    #mcReload, #mcWeapon {
+      width: 44px; height: 44px; font-size: 11px;
+      bottom: max(88px, calc(env(safe-area-inset-bottom) + 76px));
+    }
+  }
 
   #msg {
     position: absolute; top: 46%; left: 50%; transform: translate(-50%, -50%);
