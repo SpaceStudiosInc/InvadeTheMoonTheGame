@@ -7,6 +7,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#000000">
+<meta name="screen-orientation" content="landscape">
 <title>INVADE THE MOON</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -638,7 +639,8 @@
         <button id="btnStart">Start</button>
         <button id="btnOptions" class="secondary">Options</button>
         <button id="btnStats" class="secondary">Stats</button>
-        <div class="sub" style="image-rendering:pixelated;letter-spacing:1px;">WASD / JOYSTICK · MOUSE / TOUCH AIM · CLICK / FIRE BTN</div>
+        <div class="sub ctrl-desktop" style="image-rendering:pixelated;letter-spacing:1px;">WASD · MOUSE AIM · CLICK / SPACE FIRE</div>
+        <div class="sub ctrl-mobile" style="display:none;image-rendering:pixelated;letter-spacing:1px;">JOYSTICK · TOUCH AIM · AUTO-FIRE · LANDSCAPE</div>
         <div class="sub" id="titleDepth" style="margin-top:6px;opacity:.85;">EXFIL after boss to unlock</div>
       </div>
     </div>
@@ -707,12 +709,17 @@
     <div id="briefingScreen" class="overlay">
       <h2>CONTROLS</h2>
       <div class="sub" style="line-height:1.8;max-width:360px;">
-        <div><b>WASD</b> — Move</div>
-        <div><b>Mouse</b> — Aim</div>
-        <div><b>Click / Space</b> — Fire</div>
-        <div><b>1-5 / Q E / Scroll</b> — Switch gun</div>
-        <div><b>R</b> — Reload</div>
-        <div><b>Esc</b> — Pause</div>
+        <div class="ctrl-desktop"><b>WASD</b> — Move</div>
+        <div class="ctrl-desktop"><b>Mouse</b> — Aim</div>
+        <div class="ctrl-desktop"><b>Click / Space</b> — Fire</div>
+        <div class="ctrl-desktop"><b>1-5 / Q E / Scroll</b> — Switch gun</div>
+        <div class="ctrl-desktop"><b>R</b> — Reload</div>
+        <div class="ctrl-desktop"><b>Esc</b> — Pause</div>
+        <div class="ctrl-mobile" style="display:none"><b>JOYSTICK</b> — Move</div>
+        <div class="ctrl-mobile" style="display:none"><b>TOUCH</b> — Aim</div>
+        <div class="ctrl-mobile" style="display:none"><b>AUTO-FIRE</b> (no press needed)</div>
+        <div class="ctrl-mobile" style="display:none"><b>RELOAD / GUN</b> buttons</div>
+        <div class="ctrl-mobile" style="display:none"><b>Landscape</b> — rotate phone sideways</div>
       </div>
       <div class="menu-btns">
         <button id="btnBriefingBack" class="secondary">Back</button>
@@ -1212,9 +1219,9 @@
   <div id="mcJoystick" class="mc-stick">
     <div id="mcKnob"></div>
   </div>
-  <button type="button" id="mcFire" class="mc-btn">FIRE</button>
-  <button type="button" id="mcReload" class="mc-btn">R</button>
-  <button type="button" id="mcWeapon" class="mc-btn">Q/E</button>
+  <button type="button" id="mcFire" class="mc-btn" style="display:none">AUTO</button>
+  <button type="button" id="mcReload" class="mc-btn">RELOAD</button>
+  <button type="button" id="mcWeapon" class="mc-btn">GUN</button>
 </div>
 </body>
 </html>

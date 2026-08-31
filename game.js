@@ -1807,6 +1807,13 @@ function setupMobileControls() {
   const refresh = () => {
     const want = isCoarsePointer() && document.body.classList.contains('in-game');
     setMobileControlsVisible(want);
+    document.querySelectorAll('.ctrl-desktop').forEach(el => { el.style.display = isCoarsePointer() ? 'none' : ''; });
+    document.querySelectorAll('.ctrl-mobile').forEach(el => { el.style.display = isCoarsePointer() ? '' : 'none'; });
+    try {
+      if (isCoarsePointer() && screen.orientation && screen.orientation.lock) {
+        screen.orientation.lock('landscape').catch(() => {});
+      }
+    } catch (_) {}
   };
   // Observe in-game class changes
   const obs = new MutationObserver(refresh);
@@ -2733,7 +2740,12 @@ function update() {
       flashToast('RELOADED');
     }
   }
+  // Mobile-only: auto-fire so player doesn't need to hold a button
+  if (typeof isCoarsePointer === 'function' && isCoarsePointer() && started && !paused && !gameOver) {
+    mouse.down = true;
+  }
   if (mouse.down && currentWeapon().auto) tryFire();
+  if (mouse.down && !currentWeapon().auto && player.shootCooldown <= 0) tryFire();
 
   if (player.shootCooldown > 0) player.shootCooldown--;
   if (player.invuln > 0) player.invuln--;
