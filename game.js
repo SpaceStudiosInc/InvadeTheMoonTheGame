@@ -669,9 +669,16 @@ function buildHazardGrid(hazards) {
   const data = new Uint8Array(cols * rows);
   for (let i = 0; i < hazards.length; i++) {
     const h = hazards[i];
-    const c = ((h.x - WALL) / TILE_SIZE) | 0;
-    const r = ((h.y - WALL) / TILE_SIZE) | 0;
-    if (c >= 0 && c < cols && r >= 0 && r < rows) data[r * cols + c] = 1;
+    // Fill every tile the hazard rectangle covers (not just top-left)
+    const c0 = Math.max(0, ((h.x - WALL) / TILE_SIZE) | 0);
+    const r0 = Math.max(0, ((h.y - WALL) / TILE_SIZE) | 0);
+    const c1 = Math.min(cols - 1, (((h.x + h.w - 1) - WALL) / TILE_SIZE) | 0);
+    const r1 = Math.min(rows - 1, (((h.y + h.h - 1) - WALL) / TILE_SIZE) | 0);
+    for (let rr = r0; rr <= r1; rr++) {
+      for (let cc = c0; cc <= c1; cc++) {
+        data[rr * cols + cc] = 1;
+      }
+    }
   }
   return { cols, rows, data };
 }
