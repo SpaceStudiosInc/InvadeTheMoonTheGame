@@ -992,8 +992,8 @@ function safeRoomPos(room, radius, minDistFromCenter) {
 
 /**
  * Button / gate puzzle room.
- * Buttons toggle gates: B1→G1+G3, B2→G3, B3→G1+G2 (example).
- * All gates must be open to solve (unlock exits + reveal reward).
+ * Random solvable toggle map. Corridor oriented to room entrance so
+ * player cannot walk around the gates.
  */
 function setupPuzzleRoom(r) {
   r.enemies = [];
@@ -1006,44 +1006,107 @@ function setupPuzzleRoom(r) {
   r.puzzleSolved = false;
   r.buttonCooldown = 0;
 
-  // Vertical hallway — wider for movement
-  const hallW = 192;
-  const hallL = W / 2 - hallW / 2;
-  const hallR = W / 2 + hallW / 2;
-  const hazards = [];
-  const wallTop = WALL + 48;
-  const wallBot = H - WALL - 48;
-  hazards.push({ x: WALL, y: wallTop, w: hallL - WALL, h: wallBot - wallTop, blocking: true });
-  hazards.push({ x: hallR, y: wallTop, w: W - WALL - hallR, h: wallBot - wallTop, blocking: true });
-  r.hazards = hazards;
-  r.hazardGrid = buildHazardGrid(r.hazards);
+  const doors = r.doors || {};
+  const hasN = !!doors.n, hasS = !!doors.s, hasE = !!doors.e, hasW = !!doors.w;
+  // Prefer axis matching existing doors; default vertical (N-S)
+  let vertical = true;
+  if ((hasE || hasW) && !(hasN || hasS)) vertical = false;
+  else if ((hasN || hasS) && !(hasE || hasW)) vertical = true;
+  else if ((hasE || hasW) && Math.random() < 0.5) vertical = false;
+  // Buttons near the "entrance" side (prefer south/east if present)
+  let buttonsNear = vertical ? (hasS ? 's' : (hasN ? 'n' : 's')) : (hasE ? 'e' : (hasW ? 'w' : 'e'));
 
-  // Gates: full-width tile strips spanning the hallway
-  const gateH = TILE_SIZE;
-  const gx = hallL;
-  const gw = hallW;
-  r.puzzleGates = [
-    { id: 0, x: gx, y: Math.round(H * 0.58 / TILE_SIZE) * TILE_SIZE, w: gw, h: gateH, open: false },
-    { id: 1, x: gx, y: Math.round(H * 0.42 / TILE_SIZE) * TILE_SIZE, w: gw, h: gateH, open: false },
-    { id: 2, x: gx, y: Math.round(H * 0.26 / TILE_SIZE) * TILE_SIZE, w: gw, h: gateH, open: false }
-  ];
-  r.puzzleMap = [
-    [0, 2],
-    [2],
-    [0, 1]
-  ];
-  // Buttons: small elevator sprites at south end
-  const by = H * 0.78;
-  const bx = W / 2;
-  r.puzzleButtons = [
-    { id: 0, x: bx - 48, y: by, r: 14, label: '1', on: false },
-    { id: 1, x: bx, y: by, r: 14, label: '2', on: false },
-    { id: 2, x: bx + 48, y: by, r: 14, label: '3', on: false }
-  ];
-  r.pickups = [
-    { x: W / 2 - 20, y: H * 0.14, r: 12, kind: 'health', taken: false },
-    { x: W / 2 + 20, y: H * 0.14, r: 12, kind: 'ammo', taken: false }
-  ];
+  const hallW = 160;
+  const hazards = [];
+  const margin = WALL + 24;
+
+  if (vertical) {
+    const hallL = W / 2 - hallW / 2;
+    const hallR = W / 2 + hallW / 2;
+    // Full side walls — no walk-around
+    hazards.push({ x: WALL, y: margin, w: hallL - WALL, h: H - margin * 2, blocking: true });
+    hazards.push({ x: hallR, y: margin, w: W - WALL - hallR, h: H - margin * 2, blocking: true });
+    r.hazards = hazards;
+    r.hazardGrid = buildHazardGrid(r.hazards);
+
+    const gx = hallL, gw = hallW, gateH = TILE_SIZE;
+    const ys = [0.30, 0.45, 0.60].map(f => Math.round(H * f / TILE_SIZE) * TILE_SIZE);
+    r.puzzleGates = ys.map((y, id) => ({ id, x: gx, y, w: gw, h: gateH, open: false }));
+    const by = buttonsNear === 's' ? H * 0.82 : H * 0.18;
+    const bx = W / 2;
+    r.puzzleButtons = [
+      { id: 0, x: bx - 48, y: by, r: 14, label: '1', on: false },
+      { id: 1, x: bx, y: by, r: 14, label: '2', on: false },
+      { id: 2, x: bx + 48, y: by, r: 14, label: '3', on: false }
+    ];
+    const py = buttonsNear === 's' ? H * 0.12 : H * 0.88;
+    r.pickups = [
+      { x: W / 2 - 20, y: py, r: 12, kind: 'health', taken: false },
+      { x: W / 2 + 20, y: py, r: 12, kind: 'ammo', taken: false }
+    ];
+  } else {
+    const hallT = H / 2 - hallW / 2;
+    const hallB = H / 2 + hallW / 2;
+    hazards.push({ x: margin, y: WALL, w: W - margin * 2, h: hallT - WALL, blocking: true });
+    hazards.push({ x: margin, y: hallB, w: W - margin * 2, h: H - WALL - hallB, blocking: true });
+    r.hazards = hazards;
+    r.hazardGrid = buildHazardGrid(r.hazards);
+
+    const gy = hallT, gh = hallW, gateW = TILE_SIZE;
+    const xs = [0.30, 0.45, 0.60].map(f => Math.round(W * f / TILE_SIZE) * TILE_SIZE);
+    r.puzzleGates = xs.map((x, id) => ({ id, x, y: gy, w: gateW, h: gh, open: false }));
+    const bx = buttonsNear === 'e' ? W * 0.82 : W * 0.18;
+    const by = H / 2;
+    r.puzzleButtons = [
+      { id: 0, x: bx, y: by - 48, r: 14, label: '1', on: false },
+      { id: 1, x: bx, y: by, r: 14, label: '2', on: false },
+      { id: 2, x: bx, y: by + 48, r: 14, label: '3', on: false }
+    ];
+    const px = buttonsNear === 'e' ? W * 0.12 : W * 0.88;
+    r.pickups = [
+      { x: px, y: H / 2 - 20, r: 12, kind: 'health', taken: false },
+      { x: px, y: H / 2 + 20, r: 12, kind: 'ammo', taken: false }
+    ];
+  }
+
+  // Random solvable toggle map (linear system over GF(2) with solution)
+  r.puzzleMap = generateSolvablePuzzleMap(3);
+  r.puzzleAxis = vertical ? 'v' : 'h';
+  r.puzzleButtonsNear = buttonsNear;
+}
+
+function generateSolvablePuzzleMap(n) {
+  // Keep sampling until the matrix is full-rank over GF(2) so all-open is reachable
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const map = [];
+    for (let b = 0; b < n; b++) {
+      const gates = [];
+      for (let g = 0; g < n; g++) if (Math.random() < 0.55) gates.push(g);
+      if (!gates.length) gates.push(Math.floor(Math.random() * n));
+      map.push(gates);
+    }
+    // Build GF(2) matrix
+    const M = Array.from({ length: n }, () => Array(n).fill(0));
+    for (let b = 0; b < n; b++) for (const g of map[b]) M[g][b] ^= 1;
+    // Gaussian elimination rank
+    const A = M.map(row => row.slice());
+    let rank = 0;
+    for (let col = 0; col < n; col++) {
+      let piv = -1;
+      for (let row = rank; row < n; row++) if (A[row][col]) { piv = row; break; }
+      if (piv < 0) continue;
+      [A[rank], A[piv]] = [A[piv], A[rank]];
+      for (let row = 0; row < n; row++) {
+        if (row !== rank && A[row][col]) {
+          for (let c = col; c < n; c++) A[row][c] ^= A[rank][c];
+        }
+      }
+      rank++;
+    }
+    if (rank === n) return map;
+  }
+  // Fallback known solvable
+  return [[0, 2], [2], [0, 1]];
 }
 
 function togglePuzzleButton(room, btnId) {
@@ -1086,6 +1149,7 @@ function resolvePuzzleGateCollision(ent) {
   const room = rooms[curKey];
   if (!room || room.type !== 'puzzle') return;
   const gates = room.puzzleGates || [];
+  const near = room.puzzleButtonsNear || 's';
   for (let i = 0; i < gates.length; i++) {
     const g = gates[i];
     if (g.open) continue;
@@ -1099,8 +1163,11 @@ function resolvePuzzleGateCollision(ent) {
       ent.x += dx * push;
       ent.y += dy * push;
     } else if (dist < ent.r) {
-      // Center inside rect — push south (toward buttons)
-      ent.y = g.y + g.h + ent.r + 1;
+      // Center inside rect — push toward buttons side
+      if (near === 's') ent.y = g.y + g.h + ent.r + 1;
+      else if (near === 'n') ent.y = g.y - ent.r - 1;
+      else if (near === 'e') ent.x = g.x + g.w + ent.r + 1;
+      else ent.x = g.x - ent.r - 1;
     }
   }
 }
@@ -1621,8 +1688,10 @@ function generateDungeon() {
     }
 
     if (r.type === 'chest') {
-      // Single centered chest — quiet room
-      const gun = weightedPick(CHEST_POOL);
+      // Single centered chest — quiet room, never repeat owned weapons
+      const owned = (typeof unlockedWeapons !== 'undefined') ? unlockedWeapons : new Set(['pistol']);
+      const pool = CHEST_POOL.filter(g => !owned.has(g.id));
+      const gun = weightedPick(pool.length ? pool : CHEST_POOL);
       r.chests = [{
         x: W / 2, y: H / 2,
         r: 22, open: false, weaponId: gun.id
@@ -2304,10 +2373,16 @@ function damagePlayer(n) {
 }
 function spawnBossRelicDrop(room) {
   if (!room) return;
-  const pool = (typeof RELIC_DEFS !== 'undefined' && RELIC_DEFS.length)
+  const all = (typeof RELIC_DEFS !== 'undefined' && RELIC_DEFS.length)
     ? RELIC_DEFS
     : [{ id: 'harden' }, { id: 'moonboots' }, { id: 'pockets' }, { id: 'gunoil' },
        { id: 'magnet' }, { id: 'pierce' }, { id: 'laser' }];
+  // Prefer relics not already owned this run
+  let pool = all;
+  if (typeof runBag !== 'undefined' && runBag.runRelicRanks) {
+    const missing = all.filter(r => !(runBag.runRelicRanks[r.id] > 0));
+    if (missing.length) pool = missing;
+  }
   const offerId = pool[Math.floor(Math.random() * pool.length)].id;
   // Drop near center of boss room (slightly offset so not on corpse)
   const pos = (typeof safeRoomPos === 'function')
@@ -3337,7 +3412,7 @@ function update() {
       if (typeof playStory === 'function') {
         const played = playStory('boss_key');
         if (!played) {
-          startDialogue([{ speaker: 'SERENITY', text: 'Boss access key acquired. Proceed when ready.' }]);
+          startDialogue([{ speaker: 'SERENITY', text: 'Boss key.' }]);
         }
       }
       updateRoomLabel();
@@ -3365,8 +3440,7 @@ function update() {
         const played = playStory('open_chest');
         if (!played) {
           startDialogue([
-            { speaker: 'YOU', text: 'Ooh, shiny.' },
-            { speaker: 'SERENITY', text: 'Survive this level to keep your rewards.' }
+            { speaker: 'SERENITY', text: 'Survive to keep it.' }
           ]);
         }
       }

@@ -35,75 +35,52 @@ const STORY_DATA = {
 
     1: {
       mission_start: [
-        { speaker: 'SERENITY', text: 'Welcome to Serenity Corp. Debt Forgiveness Program.' },
-        { speaker: 'SERENITY', text: 'Your current balance is -$4,547,889.48.' },
-        { speaker: 'SERENITY', text: 'Complete tasks to remove the negative amount.' },
-        { speaker: 'SERENITY', text: 'Then you can see your family again.' },
-        { speaker: 'SERENITY', text: 'Thank you for choosing Serenity Corp.' },
-        { speaker: 'YOU', text: '...' }
+        { speaker: 'SERENITY', text: 'Debt Forgiveness Program. Clear the debt.' }
       ],
       enter_combat_room: [
         { speaker: 'SERENITY', text: 'Kill all that moves.' }
       ],
-      // Fires when the player actually opens a weapon chest (not on room enter)
       open_chest: [
-        { speaker: 'YOU', text: 'Ooh, shiny.' },
-        { speaker: 'SERENITY', text: 'You will have to survive this level to keep your rewards.' }
+        { speaker: 'SERENITY', text: 'Survive to keep it.' }
       ],
-      // Fires when picking up the boss key
       boss_key: [
-        { speaker: 'SERENITY', text: 'Boss access key acquired. Proceed when ready.' }
+        { speaker: 'SERENITY', text: 'Boss key.' }
       ],
       enter_boss: [
-        { speaker: 'SERENITY', text: 'Kill the big one.' },
-        { speaker: 'YOU', text: 'Ok.' }
+        { speaker: 'SERENITY', text: 'Kill the big one.' }
       ],
       boss_defeated: [
-        { speaker: 'SERENITY', text: 'Exfil or continue to fulfill your debt.' }
+        { speaker: 'SERENITY', text: 'Exfil or continue.' }
       ]
     },
-
-    // Optional story beats on choice depths (only if you want talk before the pads)
     5: {
       boss_defeated: [
-        { speaker: 'SERENITY', text: 'Target down. Decision chamber is open. Do not hesitate.' }
+        { speaker: 'SERENITY', text: 'Decision chamber open.' }
       ]
     },
     10: {
       boss_defeated: [
-        { speaker: 'SERENITY', text: 'Clear. One more operational decision before elevators.' }
+        { speaker: 'SERENITY', text: 'One more decision.' }
       ]
     },
     15: {
       mission_start: [
-        { speaker: 'SERENITY', text: 'Depth 15. End of the mapped contract zone.' },
-        { speaker: 'SERENITY', text: 'Complete the objective. Your account review follows.' }
+        { speaker: 'SERENITY', text: 'Depth 15. End of contract zone.' }
       ],
       boss_defeated: [
-        { speaker: 'SERENITY', text: 'Mapped sector clear. Step into the chamber. Your status will be updated.' }
+        { speaker: 'SERENITY', text: 'Step into the chamber.' }
       ]
     }
   },
 
-  // ════════════════════════════════════════════════════════════════
-  // RANDOM PICKUP LINES
-  // ════════════════════════════════════════════════════════════════
   pickupWeapon: [
-    [ { speaker: 'SERENITY', text: 'Asset acquired: {name}. Survive to keep it.' } ],
-    [ { speaker: 'YOU', text: 'New toy.' } ],
-    [ { speaker: 'SERENITY', text: '{name} logged. Die and it goes back on the ledger.' } ],
-    [ { speaker: 'SERENITY', text: 'Improved tools. Improved efficiency. Keep moving.' } ],
-    [ { speaker: 'YOU', text: 'This\'ll do.' } ],
-    [ { speaker: 'SERENITY', text: 'Equipment issued. Your debt does not care how it looks.' } ]
+    [ { speaker: 'SERENITY', text: '{name}.' } ],
+    [ { speaker: 'YOU', text: 'New toy.' } ]
   ],
 
   pickupRelic: [
-    [ { speaker: 'SERENITY', text: 'Anomaly secured: {name}. Extract or lose it.' } ],
-    [ { speaker: 'YOU', text: 'What even is this...' } ],
-    [ { speaker: 'SERENITY', text: '{name} registered. Corporate thanks you for your compliance.' } ],
-    [ { speaker: 'SERENITY', text: 'Field upgrade applied. Performance metrics will improve.' } ],
-    [ { speaker: 'YOU', text: 'I\'ll take it.' } ],
-    [ { speaker: 'SERENITY', text: 'Relic logged. Family visitation still pending debt clearance.' } ]
+    [ { speaker: 'SERENITY', text: '{name}.' } ],
+    [ { speaker: 'YOU', text: 'I\'ll take it.' } ]
   ],
 
   // ════════════════════════════════════════════════════════════════
@@ -116,99 +93,83 @@ const STORY_DATA = {
   // ════════════════════════════════════════════════════════════════
   exitChoices: {
 
-    // LEVEL 5 — Martian child
     5: {
-      prompt: 'A small Martian child is cornered in the bay. Serenity marks it hostile.',
+      prompt: 'Child marked hostile.',
       options: [
         {
           id: 'kill_child',
           label: 'KILL',
-          sub: 'ELIMINATE TARGET',
+          sub: 'ELIMINATE',
           peaceful: false,
-          confirm: 'Serenity orders elimination. The child will not leave this room.',
+          confirm: 'Target eliminated.',
           dialogue: [
-            { speaker: 'SERENITY', text: 'Target neutralized. Efficiency noted.' },
-            { speaker: 'YOU', text: '...' }
+            { speaker: 'SERENITY', text: 'Target neutralized.' }
           ]
         },
         {
           id: 'spare_child',
           label: 'SPARE',
-          sub: 'LET IT LIVE',
+          sub: 'LET LIVE',
           peaceful: true,
-          confirm: 'You ignore the mark. The child flees into the dark.',
+          confirm: 'Child flees.',
           dialogue: [
-            { speaker: 'SERENITY', text: 'Deviation logged. Do not make a habit of mercy.' },
-            { speaker: 'YOU', text: 'It was a kid.' }
+            { speaker: 'SERENITY', text: 'Deviation logged.' }
           ]
         }
       ]
     },
-
-    // LEVEL 10 — Titanian captive (still framed as "hostile" by Serenity)
     10: {
-      prompt: 'A bound "hostile" kneels under the lights. Serenity wants a clean execution.',
+      prompt: 'Bound captive. Execute?',
       options: [
         {
           id: 'execute_captive',
           label: 'EXECUTE',
-          sub: 'FOLLOW ORDERS',
+          sub: 'ORDERS',
           peaceful: false,
-          confirm: 'One shot. The ledger stays clean. Serenity approves.',
+          confirm: 'Hostile removed.',
           dialogue: [
-            { speaker: 'SERENITY', text: 'Hostile removed. Debt clock continues.' },
-            { speaker: 'YOU', text: 'Done.' }
+            { speaker: 'SERENITY', text: 'Hostile removed.' }
           ]
         },
         {
           id: 'release_captive',
           label: 'RELEASE',
-          sub: 'CUT THE BINDINGS',
+          sub: 'FREE THEM',
           peaceful: true,
-          confirm: 'You cut them free. They do not thank you — they run toward the Moon dark.',
+          confirm: 'Released.',
           dialogue: [
-            { speaker: 'SERENITY', text: 'Unauthorized release. Your file has been flagged.' },
-            { speaker: 'YOU', text: 'They looked human enough.' }
+            { speaker: 'SERENITY', text: 'Unauthorized release.' }
           ]
         }
       ]
     },
-
-    // LEVEL 15 — debt deal (tune this later if you want)
     15: {
-      prompt: 'Serenity offers an accelerated forgiveness package. Sign, or walk.',
+      prompt: 'Forgiveness deal?',
       options: [
         {
           id: 'accept_forgiveness',
           label: 'ACCEPT',
-          sub: 'DEBT FORGIVEN?',
+          sub: 'DEAL',
           peaceful: false,
-          confirm: 'You take the deal. The number drops — and new terms attach to your name.',
+          confirm: 'Deal accepted.',
           dialogue: [
-            { speaker: 'SERENITY', text: 'Partial forgiveness applied. Continued service required.' },
-            { speaker: 'YOU', text: 'How much is left?' },
-            { speaker: 'SERENITY', text: 'Enough.' }
+            { speaker: 'SERENITY', text: 'Partial forgiveness. Service continues.' }
           ]
         },
         {
           id: 'refuse_deal',
           label: 'REFUSE',
-          sub: 'NO MORE TERMS',
+          sub: 'NO DEAL',
           peaceful: true,
-          confirm: 'You refuse the package. The debt stays. So does your name on the board.',
+          confirm: 'Refused.',
           dialogue: [
-            { speaker: 'SERENITY', text: 'Refusal noted. Family visitation remains suspended.' },
-            { speaker: 'YOU', text: 'I\'m not signing that.' }
+            { speaker: 'SERENITY', text: 'Refusal noted.' }
           ]
         }
       ]
     }
   },
 
-  // ════════════════════════════════════════════════════════════════
-  // DEPTH 16 — final endings (survive phase comes later in code)
-  // nuke_earth + do_nothing require peaceful path: spare_child + release_captive
-  // ════════════════════════════════════════════════════════════════
   finalEndings: {
     requirePeacefulFor: ['nuke_earth', 'do_nothing'],
     options: [
@@ -217,20 +178,18 @@ const STORY_DATA = {
         label: 'NUKE THE MOON',
         sub: 'SERENITY\'S ORDER',
         always: true,
-        confirm: 'Serenity authorizes orbital strike on the lunar surface. Titanian is the target.',
+        confirm: 'Strike authorized.',
         dialogue: [
-          { speaker: 'SERENITY', text: 'Strike package armed. The Moon will be compliant.' },
-          { speaker: 'YOU', text: '...' }
+          { speaker: 'SERENITY', text: 'Strike package armed.' }
         ]
       },
       {
         id: 'nuke_earth',
         label: 'NUKE THE EARTH',
-        sub: 'TURN THE GUN AROUND',
+        sub: 'TURN AROUND',
         always: false,
-        confirm: 'You aim the package at Earth. At Serenity. At the ledger.',
+        confirm: 'Target: Earth.',
         dialogue: [
-          { speaker: 'SERENITY', text: 'Unauthorized target lock. Abort—' },
           { speaker: 'YOU', text: 'No.' }
         ]
       },
@@ -239,10 +198,9 @@ const STORY_DATA = {
         label: 'DO NOTHING',
         sub: 'WALK AWAY',
         always: false,
-        confirm: 'You power down the package. No strike. No clean ending.',
+        confirm: 'No strike.',
         dialogue: [
-          { speaker: 'YOU', text: 'I\'m done being their hands.' },
-          { speaker: 'SERENITY', text: 'Silence on the channel is still a choice.' }
+          { speaker: 'YOU', text: 'Done.' }
         ]
       }
     ]
